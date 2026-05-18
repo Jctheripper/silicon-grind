@@ -282,7 +282,8 @@ function computeIncome(s: GameState): number {
 }
 
 function empCost(id: string, owned: number): number {
-  const emp = EMPLOYEES.find(e => e.id === id)!
+  const emp = EMPLOYEES.find(e => e.id === id)
+  if (!emp) return 99999999
   return Math.floor(emp.baseCost * Math.pow(1.15, owned))
 }
 
@@ -706,8 +707,8 @@ export default function SiliconGrind() {
         liveEvent,
       }
     })
-    const emp = EMPLOYEES.find(e => e.id === empId)!
-    addFloat(`${emp.emoji} Hired!`)
+    const emp = EMPLOYEES.find(e => e.id === empId)
+    addFloat(`${emp?.emoji ?? '👤'} Hired!`)
   }, [addFloat])
 
   // ── Buy Office ──
@@ -728,8 +729,8 @@ export default function SiliconGrind() {
   // ── Buy Tool ──
   const handleBuyTool = useCallback((toolId: string) => {
     const s = gsRef.current
-    const t = TOOLS.find(t => t.id === toolId)!
-    if (s.cash < t.cost || s.tools[toolId]) return
+    const t = TOOLS.find(t => t.id === toolId)
+    if (!t || s.cash < t.cost || s.tools[toolId]) return
     if (s.sfxEnabled) sfxBuy()
     setGs(prev => ({
       ...prev,
@@ -743,8 +744,8 @@ export default function SiliconGrind() {
   // ── Buy Equipment ──
   const handleBuyEquip = useCallback((eqId: string) => {
     const s = gsRef.current
-    const eq = EQUIPMENT.find(e => e.id === eqId)!
-    if (s.cash < eq.cost || s.equipment[eqId]) return
+    const eq = EQUIPMENT.find(e => e.id === eqId)
+    if (!eq || s.cash < eq.cost || s.equipment[eqId]) return
     if (s.sfxEnabled) sfxBuy()
     setGs(prev => ({
       ...prev,
@@ -758,8 +759,8 @@ export default function SiliconGrind() {
   // ── Research ──
   const handleResearch = useCallback((nodeId: string) => {
     const s = gsRef.current
-    const node = RESEARCH.find(r => r.id === nodeId)!
-    if (s.gems < node.cost || s.research[nodeId]) return
+    const node = RESEARCH.find(r => r.id === nodeId)
+    if (!node || s.gems < node.cost || s.research[nodeId]) return
     if (node.prev && !s.research[node.prev]) return
     if (s.sfxEnabled) sfxGem()
     setGs(prev => ({
@@ -2504,9 +2505,9 @@ function MoreSheet({ gs, onSpin, spinResult, spinAnimIdx, setSpinResult, onClaim
   const canSpin = gs.spunDate !== today
   const streakDay = ((gs.loginStreak - 1) % 7) + 1
 
-  const lbEntries = [
+  const lbEntries: { name: string; val: number; isPlayer: boolean }[] = [
     { name: gs.companyName, val: gs.companyValue, isPlayer: true },
-    ...LEADERBOARD_RIVALS,
+    ...LEADERBOARD_RIVALS.map(r => ({ ...r, isPlayer: false })),
   ].sort((a, b) => b.val - a.val)
 
   return (
