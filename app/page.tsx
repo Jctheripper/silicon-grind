@@ -1883,7 +1883,6 @@ function OpenPlanScene({ employees, equipment, tools, companyName }: SceneProps)
           background:'linear-gradient(90deg,#1a6030,#1a7030,#1a6030)',
           border:'3px solid #2a7040', borderRadius:4,
           display:'flex', alignItems:'center', justifyContent:'center',
-          position:'relative' as any,
         }}>
           <div style={{ width:'100%', height:2, background:'#fff', opacity:0.5 }} />
           {/* Ball */}
