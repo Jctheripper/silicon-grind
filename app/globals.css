@@ -1,26 +1,223 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg: #0d0d1a;
+  --surface: #151528;
+  --surface2: #1c1c35;
+  --border: rgba(255,255,255,0.08);
+  --accent: #4ade80;
+  --accent2: #fbbf24;
+  --accent3: #60a5fa;
+  --gem: #a78bfa;
+  --danger: #f87171;
+  --text: #f0f0ff;
+  --muted: #8888aa;
+  --font: 'DM Sans', system-ui, -apple-system, sans-serif;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+#sg-root {
+  touch-action: none;
+  overscroll-behavior: none;
+  user-select: none;
+  -webkit-user-select: none;
+  height: 100dvh;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  flex-direction: column;
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-geist-sans), system-ui, sans-serif;
+#sg-scroll {
+  touch-action: pan-y;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
 }
+
+button {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#sg-burst-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 250;
+  overflow: hidden;
+}
+
+/* ── Keyframe: float text up ── */
+@keyframes sg-rise {
+  0%   { opacity: 1; transform: translateY(0) scale(1); }
+  80%  { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-80px) scale(0.85); }
+}
+
+/* ── Keyframe: CSS particle burst ── */
+@keyframes sgburst {
+  0%   { opacity: 1; transform: translate(-50%,-50%) translate(0,0) scale(1.2); }
+  100% { opacity: 0; transform: translate(-50%,-50%) translate(var(--dx),var(--dy)) scale(0.3); }
+}
+
+/* ── Keyframe: pulse rings on WORK btn ── */
+@keyframes sg-ring {
+  0%   { transform: scale(1); opacity: 0.6; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+
+/* ── Keyframe: WORK button pulse ── */
+@keyframes sg-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(74,222,128,0.5); }
+  50%       { box-shadow: 0 0 0 14px rgba(74,222,128,0); }
+}
+
+/* ── Keyframe: bulb flicker ── */
+@keyframes sg-flicker {
+  0%,100% { opacity: 1; }
+  92%     { opacity: 1; }
+  93%     { opacity: 0.3; }
+  94%     { opacity: 1; }
+  96%     { opacity: 0.5; }
+  97%     { opacity: 1; }
+}
+
+/* ── Keyframe: steam ── */
+@keyframes sg-steam {
+  0%   { transform: translateY(0) scaleX(1); opacity: 0.7; }
+  50%  { transform: translateY(-12px) scaleX(1.4); opacity: 0.4; }
+  100% { transform: translateY(-22px) scaleX(0.6); opacity: 0; }
+}
+
+/* ── Keyframe: code scrolling in laptop ── */
+@keyframes sg-code-scroll {
+  0%   { transform: translateY(0); }
+  100% { transform: translateY(-50%); }
+}
+
+/* ── Keyframe: news ticker ── */
+@keyframes sg-ticker {
+  0%   { transform: translateX(100%); }
+  100% { transform: translateX(-100%); }
+}
+
+/* ── Keyframe: city stars twinkle ── */
+@keyframes sg-twinkle {
+  0%,100% { opacity: 0.2; }
+  50%     { opacity: 1; }
+}
+
+/* ── Keyframe: neon sign blink ── */
+@keyframes sg-neon-blink {
+  0%,100% { opacity: 1; text-shadow: 0 0 8px #4ade80, 0 0 20px #4ade80; }
+  48%     { opacity: 1; }
+  50%     { opacity: 0.1; text-shadow: none; }
+  52%     { opacity: 1; }
+}
+
+/* ── Keyframe: elevator ── */
+@keyframes sg-elevator {
+  0%,15%   { transform: translateY(60px); }
+  40%,60%  { transform: translateY(0px); }
+  85%,100% { transform: translateY(60px); }
+}
+
+/* ── Keyframe: ping pong ball ── */
+@keyframes sg-ping-pong {
+  0%   { transform: translate(0, 0); }
+  25%  { transform: translate(60px, -20px); }
+  50%  { transform: translate(120px, 0); }
+  75%  { transform: translate(60px, -20px); }
+  100% { transform: translate(0, 0); }
+}
+
+/* ── Keyframe: breathe (plants, morale) ── */
+@keyframes sg-breathe {
+  0%,100% { transform: scaleY(1); }
+  50%     { transform: scaleY(1.05) translateY(-2px); }
+}
+
+/* ── Keyframe: income float ── */
+@keyframes sg-income-float {
+  0%   { opacity: 0; transform: translateY(0) scale(0.8); }
+  20%  { opacity: 1; }
+  80%  { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-40px) scale(1); }
+}
+
+/* ── Keyframe: alert bob ── */
+@keyframes sg-alert-bob {
+  0%,100% { transform: translateY(0); }
+  50%     { transform: translateY(-4px); }
+}
+
+/* ── Keyframe: popup pop ── */
+@keyframes sg-pop {
+  0%   { transform: scale(0.85) translateY(10px); opacity: 0; }
+  60%  { transform: scale(1.03) translateY(-2px); opacity: 1; }
+  100% { transform: scale(1) translateY(0); opacity: 1; }
+}
+
+/* ── Keyframe: bottom sheet slide in ── */
+@keyframes sg-banner-in {
+  0%   { transform: translateY(100%); }
+  100% { transform: translateY(0%); }
+}
+
+/* ── Keyframe: work button tap ── */
+@keyframes sg-tap {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(0.93); }
+  100% { transform: scale(1); }
+}
+
+/* ── Keyframe: slide in from right ── */
+@keyframes sg-slidein {
+  0%   { transform: translateX(120%); opacity: 0; }
+  100% { transform: translateX(0); opacity: 1; }
+}
+
+/* ── Keyframe: fade in ── */
+@keyframes sg-fadein {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ── Keyframe: rotate (spinner) ── */
+@keyframes sg-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Keyframe: boost glow ── */
+@keyframes sg-boost-glow {
+  0%,100% { box-shadow: 0 0 20px rgba(251,191,36,0.6), inset 0 0 10px rgba(251,191,36,0.1); }
+  50%     { box-shadow: 0 0 40px rgba(251,191,36,0.9), inset 0 0 20px rgba(251,191,36,0.2); }
+}
+
+/* ── Keyframe: Slack notification pop ── */
+@keyframes sg-slack-pop {
+  0%   { opacity: 0; transform: translateX(40px) scale(0.8); }
+  15%  { opacity: 1; transform: translateX(0) scale(1); }
+  75%  { opacity: 1; transform: translateX(0) scale(1); }
+  100% { opacity: 0; transform: translateX(40px) scale(0.8); }
+}
+
+/* ── Keyframe: milestone banner ── */
+@keyframes sg-milestone {
+  0%   { opacity: 0; transform: translateY(-20px) scale(0.9); }
+  15%  { opacity: 1; transform: translateY(0) scale(1); }
+  80%  { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-20px) scale(0.9); }
+}
+
+/* scrollbar hide */
+.hide-scroll::-webkit-scrollbar { display: none; }
+.hide-scroll { -ms-overflow-style: none; scrollbar-width: none; }

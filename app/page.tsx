@@ -1,1696 +1,2821 @@
-'use client'
-import { useState, useEffect, useCallback, useRef } from 'react'
+﻿'use client'
+
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+
+// ─────────────────────────────────────────────────────────────
+//  CONSTANTS
+// ─────────────────────────────────────────────────────────────
+
+const SAVE_KEY = 'sg_save'
+const VISITED_KEY = 'sg_visited'
+const OFFLINE_CAP = 10800 // 3 hours
+const IPO_THRESHOLD = 1_000_000_000
+const SHIP_COOLDOWN = 30
+const BOOST_DURATION = 60
+const BOOST_DURATION_SPIN = 300
+const VERSION = '1.0.0'
+
+function fmt(n: number): string {
+  if (n >= 1e12) return (n / 1e12).toFixed(2) + 'T'
+  if (n >= 1e9)  return (n / 1e9).toFixed(2)  + 'B'
+  if (n >= 1e6)  return (n / 1e6).toFixed(2)  + 'M'
+  if (n >= 1e3)  return (n / 1e3).toFixed(1)  + 'K'
+  return Math.floor(n).toString()
+}
+
+function fmtCash(n: number) { return '$' + fmt(n) }
+
+function fmtTime(s: number) {
+  if (s <= 0) return '0s'
+  if (s < 60) return `${Math.ceil(s)}s`
+  const m = Math.floor(s / 60), sec = Math.ceil(s % 60)
+  return `${m}m${sec > 0 ? ` ${sec}s` : ''}`
+}
+
+function fmtProg(n: number, max: number) {
+  const pct = Math.min(1, n / max) * 100
+  return pct.toFixed(1) + '%'
+}
 
 const EMPLOYEES = [
-  { id: 'dev',           name: 'Developer',      cost: 50,    income: 0.5,  emoji: '💻', color: '#4f46e5' },
-  { id: 'designer',      name: 'Designer',        cost: 120,   income: 1.2,  emoji: '🎨', color: '#ec4899' },
-  { id: 'marketer',      name: 'Marketer',        cost: 300,   income: 2.5,  emoji: '📣', color: '#f59e0b' },
-  { id: 'sales',         name: 'Sales Rep',       cost: 600,   income: 5,    emoji: '🤝', color: '#22c55e' },
-  { id: 'pm',            name: 'Product Manager', cost: 1200,  income: 9,    emoji: '📋', color: '#06b6d4' },
-  { id: 'datascientist', name: 'Data Scientist',  cost: 2500,  income: 18,   emoji: '📊', color: '#8b5cf6' },
-  { id: 'cto',           name: 'CTO',             cost: 8000,  income: 55,   emoji: '🔧', color: '#ef4444' },
-  { id: 'ceo',           name: 'CEO',             cost: 25000, income: 150,  emoji: '👔', color: '#f59e0b' },
+  { id: 'dev',           name: 'Developer',       baseCost: 50,    income: 0.5,  emoji: '🧑‍💻' },
+  { id: 'designer',      name: 'Designer',         baseCost: 120,   income: 1.2,  emoji: '🎨' },
+  { id: 'marketer',      name: 'Marketer',         baseCost: 300,   income: 2.5,  emoji: '📣' },
+  { id: 'sales',         name: 'Sales Rep',        baseCost: 600,   income: 5,    emoji: '💼' },
+  { id: 'pm',            name: 'Product Manager',  baseCost: 1200,  income: 9,    emoji: '📋' },
+  { id: 'datascientist', name: 'Data Scientist',   baseCost: 2500,  income: 18,   emoji: '📊' },
+  { id: 'cto',           name: 'CTO',              baseCost: 8000,  income: 55,   emoji: '⚙️' },
+  { id: 'ceo',           name: 'CEO',              baseCost: 25000, income: 150,  emoji: '👔' },
 ]
 
 const OFFICES = [
-  { id: 'garage',     name: 'Garage',          cost: 0,     multiplier: 1,   emoji: '🏠', desc: 'Coffee stains and dreams',   floors: 1 },
-  { id: 'small',      name: 'Small Office',    cost: 1200,  multiplier: 1.5, emoji: '🏢', desc: 'Real desks, real coffee',     floors: 3 },
-  { id: 'openplan',   name: 'Open Floor Plan', cost: 8000,  multiplier: 2.5, emoji: '🏙️', desc: 'Ping pong and cold brew',     floors: 6 },
-  { id: 'skyscraper', name: 'Skyscraper HQ',   cost: 50000, multiplier: 6,   emoji: '🚀', desc: 'Penthouse views, IPO dreams', floors: 10 },
-]
-
-const FLOOR_DEFS = [
-  { id: 'lobby',      name: 'Lobby',           color: '#1e1e3e', accent: '#4f46e5', icon: '🚪', desc: 'Where dreams begin',        unlockAt: 0      },
-  { id: 'devroom',    name: 'Dev Room',        color: '#0f172a', accent: '#4f46e5', icon: '💻', desc: 'Code shipped here',         unlockAt: 0      },
-  { id: 'design',     name: 'Design Studio',   color: '#1a0a2e', accent: '#ec4899', icon: '🎨', desc: 'Pixels and gradients',      unlockAt: 1200   },
-  { id: 'marketing',  name: 'Marketing Hub',   color: '#1a1200', accent: '#f59e0b', icon: '📣', desc: 'Growth at all costs',       unlockAt: 1200   },
-  { id: 'sales',      name: 'Sales Floor',     color: '#0a1a0a', accent: '#22c55e', icon: '🤝', desc: 'Always be closing',         unlockAt: 8000   },
-  { id: 'datalab',    name: 'Data Lab',        color: '#0a0a1e', accent: '#8b5cf6', icon: '📊', desc: 'Big data, bigger insights', unlockAt: 8000   },
-  { id: 'serverroom', name: 'Server Room',     color: '#001a0a', accent: '#22c55e', icon: '🖥️', desc: 'The heartbeat of ops',      unlockAt: 8000   },
-  { id: 'boardroom',  name: 'Board Room',      color: '#1a0a00', accent: '#f59e0b', icon: '📋', desc: 'Power decisions made here', unlockAt: 50000  },
-  { id: 'rooftop',    name: 'Rooftop Lounge',  color: '#0a001a', accent: '#a78bfa', icon: '🌆', desc: 'The perks of success',      unlockAt: 50000  },
-  { id: 'penthouse',  name: 'CEO Penthouse',   color: '#1a0a00', accent: '#f59e0b', icon: '👑', desc: 'The corner office',         unlockAt: 50000  },
+  { id: 'garage',      name: 'Garage',           cost: 0,     mult: 1,   floors: 1,  accent: '#4ade80' },
+  { id: 'small',       name: 'Small Office',     cost: 1200,  mult: 1.5, floors: 3,  accent: '#60a5fa' },
+  { id: 'openplan',    name: 'Open Floor Plan',  cost: 8000,  mult: 2.5, floors: 6,  accent: '#fbbf24' },
+  { id: 'skyscraper',  name: 'Skyscraper HQ',    cost: 50000, mult: 6,   floors: 10, accent: '#a78bfa' },
 ]
 
 const TOOLS = [
-  { id: 'github', name: 'GitHub',   cost: 200,   multiplier: 1.2, emoji: '🐙' },
-  { id: 'slack',  name: 'Slack',    cost: 500,   multiplier: 1.3, emoji: '💬' },
-  { id: 'aws',    name: 'AWS',      cost: 1500,  multiplier: 1.5, emoji: '☁️' },
-  { id: 'figma',  name: 'Figma',    cost: 3000,  multiplier: 1.4, emoji: '🎯' },
-  { id: 'ai',     name: 'AI Tools', cost: 10000, multiplier: 2.0, emoji: '🤖' },
+  { id: 'github', name: 'GitHub',      cost: 200,   mult: 1.2, emoji: '🐙' },
+  { id: 'slack',  name: 'Slack',       cost: 500,   mult: 1.3, emoji: '💬' },
+  { id: 'aws',    name: 'AWS',         cost: 1500,  mult: 1.5, emoji: '☁️' },
+  { id: 'figma',  name: 'Figma',       cost: 3000,  mult: 1.4, emoji: '✏️' },
+  { id: 'ai',     name: 'AI Suite',    cost: 10000, mult: 2.0, emoji: '🤖' },
 ]
 
 const EQUIPMENT = [
-  { id: 'coffee',   name: 'Coffee Machine',  cost: 150,  multiplier: 1.1, emoji: '☕' },
-  { id: 'desks',    name: 'Standing Desks',  cost: 400,  multiplier: 1.2, emoji: '🪑' },
-  { id: 'servers',  name: 'Server Rack',     cost: 2000, multiplier: 1.4, emoji: '🖥️' },
-  { id: 'pinpong',  name: 'Ping Pong Table', cost: 5000, multiplier: 1.3, emoji: '🏓' },
-  { id: 'snackbar', name: 'Snack Bar',       cost: 8000, multiplier: 1.5, emoji: '🍕' },
+  { id: 'coffee',   name: 'Coffee Machine', cost: 150,  mult: 1.1, emoji: '☕' },
+  { id: 'desks',    name: 'Standing Desks', cost: 400,  mult: 1.2, emoji: '🪑' },
+  { id: 'servers',  name: 'Server Rack',    cost: 2000, mult: 1.4, emoji: '🖥️' },
+  { id: 'pingpong', name: 'Ping Pong',      cost: 5000, mult: 1.3, emoji: '🏓' },
+  { id: 'snackbar', name: 'Snack Bar',      cost: 8000, mult: 1.5, emoji: '🍕' },
 ]
 
-const GEM_PACKS = [
-  { id: 'starter', name: 'Starter Pack', gems: 50,   price: 1.99,  emoji: '💎' },
-  { id: 'growth',  name: 'Growth Pack',  gems: 150,  price: 4.99,  emoji: '💎💎' },
-  { id: 'scale',   name: 'Scale Pack',   gems: 500,  price: 9.99,  emoji: '💎💎💎' },
-  { id: 'founder', name: 'Founder Pack', gems: 2000, price: 19.99, emoji: '👑' },
-]
-
-const SPIN_REWARDS = [
-  { label: '$500',   value: 500,  type: 'cash',  color: '#22c55e', pct: 0.005,  base: 500  },
-  { label: '10 💎',  value: 10,   type: 'gems',  color: '#a78bfa', pct: 0,      base: 0    },
-  { label: '$1,000', value: 1000, type: 'cash',  color: '#22c55e', pct: 0.01,   base: 1000 },
-  { label: '2x 5m',  value: 300,  type: 'boost', color: '#f59e0b', pct: 0,      base: 0    },
-  { label: '25 💎',  value: 25,   type: 'gems',  color: '#a78bfa', pct: 0,      base: 0    },
-  { label: '$250',   value: 250,  type: 'cash',  color: '#22c55e', pct: 0.0025, base: 250  },
-  { label: '50 💎',  value: 50,   type: 'gems',  color: '#a78bfa', pct: 0,      base: 0    },
-  { label: '$2,000', value: 2000, type: 'cash',  color: '#22c55e', pct: 0.02,   base: 2000 },
-]
-
-const MILESTONES = [
-  { id: 'm1', label: 'First Dollar',     goal: 1,       type: 'earned', reward: '10 💎',   rewardType: 'gems', rewardVal: 10     },
-  { id: 'm2', label: 'First Employee',   goal: 1,       type: 'emp',    reward: '$500',    rewardType: 'cash', rewardVal: 500    },
-  { id: 'm3', label: 'Reach $1,000',     goal: 1000,    type: 'earned', reward: '25 💎',   rewardType: 'gems', rewardVal: 25     },
-  { id: 'm4', label: 'Reach $10,000',    goal: 10000,   type: 'earned', reward: '50 💎',   rewardType: 'gems', rewardVal: 50     },
-  { id: 'm5', label: 'Reach $100,000',   goal: 100000,  type: 'earned', reward: '$50,000', rewardType: 'cash', rewardVal: 50000  },
-  { id: 'm6', label: 'Reach $1,000,000', goal: 1000000, type: 'earned', reward: '200 💎',  rewardType: 'gems', rewardVal: 200    },
+const RESEARCH = [
+  // dev branch
+  { id:'r01', branch:'dev',   cost:5,   boost:0.05, name:'Code Review',       prev:null },
+  { id:'r02', branch:'dev',   cost:15,  boost:0.08, name:'Pair Programming',  prev:'r01' },
+  { id:'r03', branch:'dev',   cost:35,  boost:0.12, name:'TDD Mastery',       prev:'r02' },
+  { id:'r04', branch:'dev',   cost:60,  boost:0.15, name:'Clean Architecture',prev:'r03' },
+  { id:'r05', branch:'dev',   cost:100, boost:0.20, name:'DevOps Pipeline',   prev:'r04' },
+  { id:'r16', branch:'dev',   cost:175, boost:0.28, name:'Open Source',       prev:'r05' },
+  // infra branch
+  { id:'r06', branch:'infra', cost:8,   boost:0.05, name:'Load Balancing',    prev:null },
+  { id:'r07', branch:'infra', cost:20,  boost:0.10, name:'Auto Scaling',      prev:'r06' },
+  { id:'r08', branch:'infra', cost:40,  boost:0.13, name:'CDN Mastery',       prev:'r07' },
+  { id:'r09', branch:'infra', cost:80,  boost:0.16, name:'Zero Downtime',     prev:'r08' },
+  { id:'r10', branch:'infra', cost:130, boost:0.22, name:'Multi-Region',      prev:'r09' },
+  { id:'r17', branch:'infra', cost:175, boost:0.28, name:'Edge Computing',    prev:'r10' },
+  // data branch
+  { id:'r11', branch:'data',  cost:8,   boost:0.05, name:'Analytics',         prev:null },
+  { id:'r12', branch:'data',  cost:18,  boost:0.08, name:'A/B Testing',       prev:'r11' },
+  { id:'r13', branch:'data',  cost:35,  boost:0.10, name:'Data Warehouse',    prev:'r12' },
+  { id:'r14', branch:'data',  cost:65,  boost:0.14, name:'ML Pipeline',       prev:'r13' },
+  { id:'r15', branch:'data',  cost:120, boost:0.20, name:'Predictive AI',     prev:'r14' },
+  { id:'r18', branch:'data',  cost:200, boost:0.35, name:'AI Product Manager',prev:'r15' },
 ]
 
 const LIVE_EVENTS = [
-  { id: 'e1', name: 'Launch Weekend', desc: 'Ship 3 features',  goal: 3,     goalType: 'ships', reward: 150,  rewardType: 'gems', emoji: '🚀' },
-  { id: 'e2', name: 'Hiring Spree',   desc: 'Hire 5 employees', goal: 5,     goalType: 'hires', reward: 5000, rewardType: 'cash', emoji: '👥' },
-  { id: 'e3', name: 'Revenue Rush',   desc: 'Earn $50,000',     goal: 50000, goalType: 'cash',  reward: 100,  rewardType: 'gems', emoji: '💰' },
+  { id:'launch',  name:'🚀 Launch Weekend', desc:'Ship 3 features',  goal:3,  type:'ships', reward:150, rewardType:'gems',  rewardDesc:'150 💎' },
+  { id:'hiring',  name:'👥 Hiring Spree',   desc:'Hire 5 employees', goal:5,  type:'hires', reward:5000,rewardType:'cash',  rewardDesc:'$5K' },
+  { id:'revenue', name:'💸 Revenue Rush',   desc:'Earn $50K',        goal:50000,type:'earned',reward:100,rewardType:'gems', rewardDesc:'100 💎' },
+]
+
+const MILESTONES = [
+  { id:'m1', label:'First Dollar',    type:'earned', goal:1,       reward:{ gems:10 } },
+  { id:'m2', label:'First Employee',  type:'emp',    goal:1,       reward:{ cash:500 } },
+  { id:'m3', label:'$1K Earned',      type:'earned', goal:1000,    reward:{ gems:25 } },
+  { id:'m4', label:'$10K Earned',     type:'earned', goal:10000,   reward:{ gems:50 } },
+  { id:'m5', label:'$100K Earned',    type:'earned', goal:100000,  reward:{ cash:50000 } },
+  { id:'m6', label:'$1M Earned',      type:'earned', goal:1000000, reward:{ gems:200 } },
+]
+
+const SPIN_REWARDS = [
+  { label: '$250',    type: 'cash',  val: 250 },
+  { label: '10 💎',   type: 'gems',  val: 10 },
+  { label: '$500',    type: 'cash',  val: 500 },
+  { label: '2× Boost',type: 'boost', val: BOOST_DURATION_SPIN },
+  { label: '$1,000',  type: 'cash',  val: 1000 },
+  { label: '25 💎',   type: 'gems',  val: 25 },
+  { label: '$2,000',  type: 'cash',  val: 2000 },
+  { label: '50 💎',   type: 'gems',  val: 50 },
+]
+
+const MISSION_POOL = [
+  { id:'ms1', desc:'Ship 2 features today',       type:'ships',  goal:2,     reward:{ gems:5 } },
+  { id:'ms2', desc:'Earn $5,000 today',           type:'earned', goal:5000,  reward:{ gems:8 } },
+  { id:'ms3', desc:'Hire 3 employees today',      type:'hires',  goal:3,     reward:{ gems:6 } },
+  { id:'ms4', desc:'Click WORK 50 times',         type:'clicks', goal:50,    reward:{ cash:1000 } },
+  { id:'ms5', desc:'Spend $2,000 on upgrades',    type:'spend',  goal:2000,  reward:{ gems:7 } },
+  { id:'ms6', desc:'Earn $20,000 today',          type:'earned', goal:20000, reward:{ gems:15 } },
+  { id:'ms7', desc:'Ship 5 features today',       type:'ships',  goal:5,     reward:{ gems:12 } },
+  { id:'ms8', desc:'Click WORK 100 times',        type:'clicks', goal:100,   reward:{ gems:10 } },
+  { id:'ms9', desc:'Hire 1 senior employee',      type:'hires',  goal:1,     reward:{ cash:3000 } },
+]
+
+const COMPANY_STAGES = [
+  { label:'Side Project', min:0 },
+  { label:'Seed Stage',   min:1000 },
+  { label:'Series A',     min:100000 },
+  { label:'Series B',     min:1000000 },
+  { label:'Series C',     min:10000000 },
+  { label:'Unicorn 🦄',   min:100000000 },
 ]
 
 const RANDOM_EVENTS = [
-  { msgFn: (v:number) => `🚀 Viral tweet! +${fmt(v)}`,           type: 'good', pct: 0.02,  base: 2000 },
-  { msgFn: (v:number) => `📰 Press feature! +${fmt(v)}`,          type: 'good', pct: 0.05,  base: 5000 },
-  { msgFn: (v:number) => `🎯 Enterprise client! +${fmt(v)}`,      type: 'good', pct: 0.08,  base: 8000 },
-  { msgFn: (v:number) => `⚠️ Server crash! Pay ${fmt(v)} to fix`, type: 'bad',  pct: 0.005, base: 500  },
-  { msgFn: (v:number) => `👾 Security breach! Pay ${fmt(v)}`,     type: 'bad',  pct: 0.01,  base: 1000 },
+  { id:'viral',      text:'🐦 Viral Tweet!',       type:'good', base:2000,    pct:0.005 },
+  { id:'press',      text:'📰 Press Feature!',      type:'good', base:5000,    pct:0.01  },
+  { id:'enterprise', text:'🏢 Enterprise Client!',  type:'good', base:8000,    pct:0.015 },
+  { id:'crash',      text:'💥 Server Crash!',       type:'bad',  base:-500,    pct:0.002 },
+  { id:'breach',     text:'🔒 Security Breach!',    type:'bad',  base:-1000,   pct:0.003 },
 ]
 
-const LEADERBOARD_BASE = [
-  { name: 'TechVault Inc',  value: 9800000 },
-  { name: 'NexaCore',       value: 7200000 },
-  { name: 'PixelForge',     value: 5100000 },
-  { name: 'CloudNine Labs', value: 3400000 },
-  { name: 'ByteRocket',     value: 2100000 },
+const LEADERBOARD_RIVALS = [
+  { name:'TechVault Inc',  val:9_800_000 },
+  { name:'NexaCore',       val:7_200_000 },
+  { name:'PixelForge',     val:4_100_000 },
+  { name:'ByteRocket',     val:2_600_000 },
+  { name:'DataNest',       val:1_400_000 },
 ]
 
-const IPO_THRESHOLD = 1_000_000_000
-
-const PRESTIGE_BOARD = [
-  { name: 'TechVault Inc',  ipos: 7 },
-  { name: 'NexaCore',       ipos: 5 },
-  { name: 'PixelForge',     ipos: 4 },
-  { name: 'CloudNine Labs', ipos: 2 },
-  { name: 'ByteRocket',     ipos: 1 },
+const GEM_PACKS = [
+  { gems:50,   price:'$1.99', label:'Starter',    bonus:'' },
+  { gems:150,  price:'$4.99', label:'Growth',     bonus:'+20% bonus' },
+  { gems:500,  price:'$9.99', label:'Accelerate', bonus:'+35% bonus' },
+  { gems:2000, price:'$19.99',label:'Founder 🌟', bonus:'+100% bonus' },
 ]
 
-const OFFLINE_CAP = 3 * 60 * 60
-const GAME_VERSION = '1.0.0'
+// ─────────────────────────────────────────────────────────────
+//  TYPES
+// ─────────────────────────────────────────────────────────────
 
-const SAVE_KEY = 'sg_save'
-let _saveCache: Record<string,unknown>|null|undefined = undefined
-function loadSave(): Record<string,unknown>|null {
-  if (_saveCache !== undefined) return _saveCache
-  if (typeof window === 'undefined') return null
-  try { const r=localStorage.getItem(SAVE_KEY); _saveCache=r?JSON.parse(r):null } catch(_) { _saveCache=null }
-  return _saveCache ?? null
+type EmpCounts  = Record<string, number>
+type Owned      = Record<string, boolean>
+type ResearchOwned = Record<string, boolean>
+type MilestonesDone = Record<string, boolean>
+
+interface LiveEvent {
+  id: string
+  progress: number
+  claimed: boolean
 }
 
-function fmt(n: number): string {
-  if (n >= 1e9) return `$${(n / 1e9).toFixed(2)}B`
-  if (n >= 1e6) return `$${(n / 1e6).toFixed(2)}M`
-  if (n >= 1e3) return `$${(n / 1e3).toFixed(1)}K`
-  return `$${Math.floor(n)}`
+interface Mission {
+  id: string
+  desc: string
+  type: string
+  goal: number
+  reward: { gems?: number; cash?: number }
+  progress: number
+  claimed: boolean
 }
 
-function empCost(base: number, owned: number): number {
-  return Math.floor(base * Math.pow(1.15, owned))
+interface FloatItem {
+  id: number
+  x: number
+  y: number
+  val: string
+  color?: string
 }
 
-function rewardLabel(def: typeof LIVE_EVENTS[0]): string {
-  return def.rewardType === 'gems' ? `${def.reward} 💎` : fmt(def.reward)
+interface AlertItem {
+  id: number
+  text: string
+  type: 'good' | 'bad'
+  reward: number
 }
 
-interface FloatItem      { id: number; x: number; y: number; val: string }
-interface Particle       { id: number; x: number; y: number; vx: number; vy: number; life: number; sym: string }
-interface MilestoneState { id: string; done: boolean; claimed: boolean }
-interface EventState     { msg: string; type: string; val: number }
-interface LiveEventState { id: string; progress: number; claimed: boolean }
-interface EmpAnim        { id: number; x: number; dir: number }
-interface ConfettiPiece  { id: number; x: number; color: string; w: number; h: number; dur: number; delay: number }
-interface DailyMission   { id: string; label: string; goal: number; type: 'ships'|'earned'|'hires'|'clicks'|'spend'; rewardType: 'gems'|'cash'; rewardVal: number; rewardPct: number; progress: number; claimed: boolean }
-
-const MISSION_POOL = [
-  { id:'ms1',  label:'Ship 2 Features',  goal:2,      type:'ships'  as const, rewardType:'gems' as const, rewardVal:20,    rewardPct:0    },
-  { id:'ms2',  label:'Earn $10,000',      goal:10000,  type:'earned' as const, rewardType:'gems' as const, rewardVal:15,    rewardPct:0    },
-  { id:'ms3',  label:'Hire 3 Employees',  goal:3,      type:'hires'  as const, rewardType:'gems' as const, rewardVal:25,    rewardPct:0    },
-  { id:'ms4',  label:'Work 20 Times',     goal:20,     type:'clicks' as const, rewardType:'cash' as const, rewardVal:5000,  rewardPct:0.05 },
-  { id:'ms5',  label:'Spend $5,000',      goal:5000,   type:'spend'  as const, rewardType:'gems' as const, rewardVal:20,    rewardPct:0    },
-  { id:'ms6',  label:'Ship 5 Features',   goal:5,      type:'ships'  as const, rewardType:'gems' as const, rewardVal:40,    rewardPct:0    },
-  { id:'ms7',  label:'Hire 5 Employees',  goal:5,      type:'hires'  as const, rewardType:'gems' as const, rewardVal:35,    rewardPct:0    },
-  { id:'ms8',  label:'Earn $50,000',      goal:50000,  type:'earned' as const, rewardType:'gems' as const, rewardVal:35,    rewardPct:0    },
-  { id:'ms9',  label:'Earn $100,000',     goal:100000, type:'earned' as const, rewardType:'gems' as const, rewardVal:50,    rewardPct:0    },
-  { id:'ms10', label:'Work 50 Times',     goal:50,     type:'clicks' as const, rewardType:'cash' as const, rewardVal:20000, rewardPct:0.1  },
-]
-
-const STREAK_REWARDS = [
-  { day:1, gems:10,  cash:0,     cashPct:0    },
-  { day:2, gems:20,  cash:0,     cashPct:0    },
-  { day:3, gems:0,   cash:5000,  cashPct:0.05 },
-  { day:4, gems:35,  cash:0,     cashPct:0    },
-  { day:5, gems:0,   cash:15000, cashPct:0.15 },
-  { day:6, gems:75,  cash:0,     cashPct:0    },
-  { day:7, gems:150, cash:50000, cashPct:0.5  },
-]
-
-function streakRewardLabel(r: typeof STREAK_REWARDS[0], cv: number): string {
-  const cashAmt = r.cash > 0 ? Math.max(r.cash, Math.floor(cv * r.cashPct)) : 0
-  if (r.day === 7) return `👑 ${r.gems} 💎 + ${fmt(cashAmt)}`
-  if (r.gems > 0)  return `${r.gems} 💎`
-  return fmt(cashAmt)
+interface GameState {
+  cash: number
+  gems: number
+  officeIdx: number
+  employees: EmpCounts
+  tools: Owned
+  equipment: Owned
+  research: ResearchOwned
+  totalEarned: number
+  companyValue: number
+  welcomeClaimed: boolean
+  spunDate: string
+  liveEvent: LiveEvent
+  liveEventTimer: number
+  totalShips: number
+  totalHires: number
+  missionDate: string
+  dailyMissions: Mission[]
+  dailyShips: number
+  dailyHires: number
+  dailyEarned: number
+  dailyClicks: number
+  dailySpent: number
+  loginStreak: number
+  lastLoginDate: string
+  streakClaimed: boolean
+  milestones: MilestonesDone
+  sfxEnabled: boolean
+  companyName: string
+  daysPlayed: number
+  prestigeLevel: number
+  lastSaved: number
 }
 
-function pickDailyMissions(dateStr: string) {
-  let seed = 0
-  for (let i = 0; i < dateStr.length; i++) seed = (seed * 31 + dateStr.charCodeAt(i)) >>> 0
-  const lcg = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 0x100000000 }
-  const pool = [...MISSION_POOL]
-  const picked: typeof MISSION_POOL = []
-  while (picked.length < 3 && pool.length > 0) {
-    const idx = Math.floor(lcg() * pool.length)
-    picked.push(pool.splice(idx, 1)[0])
+// ─────────────────────────────────────────────────────────────
+//  DEFAULT STATE
+// ─────────────────────────────────────────────────────────────
+
+function defaultState(): GameState {
+  return {
+    cash: 0, gems: 0, officeIdx: 0,
+    employees: {}, tools: {}, equipment: {}, research: {},
+    totalEarned: 0, companyValue: 0,
+    welcomeClaimed: false, spunDate: '',
+    liveEvent: { id: 'launch', progress: 0, claimed: false },
+    liveEventTimer: 172800,
+    totalShips: 0, totalHires: 0,
+    missionDate: '', dailyMissions: [],
+    dailyShips: 0, dailyHires: 0, dailyEarned: 0, dailyClicks: 0, dailySpent: 0,
+    loginStreak: 0, lastLoginDate: '', streakClaimed: false,
+    milestones: {}, sfxEnabled: true,
+    companyName: 'My Startup', daysPlayed: 0,
+    prestigeLevel: 0, lastSaved: Date.now(),
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  INCOME COMPUTATION
+// ─────────────────────────────────────────────────────────────
+
+function computeIncome(s: GameState): number {
+  let base = 0
+  for (const emp of EMPLOYEES) {
+    base += emp.income * (s.employees[emp.id] || 0)
+  }
+  const office = OFFICES[s.officeIdx]
+  let mult = office.mult
+  for (const t of TOOLS)     if (s.tools[t.id])     mult *= t.mult
+  for (const e of EQUIPMENT) if (s.equipment[e.id]) mult *= e.mult
+  let rMult = 1
+  for (const r of RESEARCH)  if (s.research[r.id])  rMult *= (1 + r.boost)
+  mult *= rMult
+  mult *= (s.prestigeLevel + 1)
+  return base * mult
+}
+
+function empCost(id: string, owned: number): number {
+  const emp = EMPLOYEES.find(e => e.id === id)!
+  return Math.floor(emp.baseCost * Math.pow(1.15, owned))
+}
+
+function totalEmps(s: GameState): number {
+  return Object.values(s.employees).reduce((a, b) => a + b, 0)
+}
+
+function getStage(cv: number) {
+  let stage = COMPANY_STAGES[0]
+  for (const s of COMPANY_STAGES) { if (cv >= s.min) stage = s }
+  return stage
+}
+
+function getNextStage(cv: number) {
+  for (const s of COMPANY_STAGES) { if (cv < s.min) return s }
+  return null
+}
+
+function getMissionProgress(m: Mission, s: GameState): number {
+  if (m.type === 'ships')  return s.dailyShips
+  if (m.type === 'earned') return s.dailyEarned
+  if (m.type === 'hires')  return s.dailyHires
+  if (m.type === 'clicks') return s.dailyClicks
+  if (m.type === 'spend')  return s.dailySpent
+  return 0
+}
+
+function pickMissions(seed: number): Mission[] {
+  const picked: Mission[] = []
+  const used = new Set<number>()
+  let x = seed
+  while (picked.length < 3) {
+    x = (x * 1664525 + 1013904223) & 0xffffffff
+    const idx = Math.abs(x) % MISSION_POOL.length
+    if (!used.has(idx)) {
+      used.add(idx)
+      const m = MISSION_POOL[idx]
+      picked.push({ ...m, progress: 0, claimed: false })
+    }
   }
   return picked
 }
 
-function useMusicEngine(level: number) {
-  const ctxRef    = useRef<AudioContext | null>(null)
-  const masterRef = useRef<GainNode | null>(null)
-  const echoInRef = useRef<DelayNode | null>(null)
-  const schedRef  = useRef<ReturnType<typeof setInterval> | null>(null)
-  const nextRef   = useRef(0)
-  const stepRef   = useRef(0)
-  const levelRef  = useRef(level)
-  const [playing, setPlaying] = useState(false)
-
-  useEffect(() => { levelRef.current = level }, [level])
-
-  // 128 BPM · 16th-note grid
-  const S     = 60 / 128 / 4   // ~0.117 s per 16th note
-  const STEPS = 64              // 4-bar loop: Am – F – C – G
-  const AHEAD = 0.15
-  const MS    = 50
-
-  const HZ: Record<string,number> = {
-    E2:82.41,  F2:87.31,  G2:98.00,  A2:110.00, B2:123.47,
-    C3:130.81, D3:146.83, E3:164.81, F3:174.61, G3:196.00,
-    A3:220.00, B3:246.94, C4:261.63, D4:293.66, E4:329.63,
-    F4:349.23, G4:392.00, A4:440.00, B4:493.88,
-    C5:523.25, D5:587.33, E5:659.25, F5:698.46, G5:783.99,
-  }
-
-  // Bass: one note per 8th note (every 2 steps) — 32 entries
-  const BASS = [
-    HZ.A2,HZ.A2, HZ.A2,HZ.E3, HZ.A2,HZ.G3, HZ.A2,HZ.E3,  // Am
-    HZ.F2,HZ.F2, HZ.F2,HZ.C3, HZ.F2,HZ.E3, HZ.F2,HZ.C3,  // F
-    HZ.C3,HZ.C3, HZ.C3,HZ.G3, HZ.C3,HZ.B2, HZ.C3,HZ.G3,  // C
-    HZ.G2,HZ.G2, HZ.G2,HZ.D3, HZ.G2,HZ.F2, HZ.G2,HZ.D3,  // G
-  ]
-
-  // Chord pads per bar [Am, F, C, G]
-  const PADS = [
-    [HZ.A3,HZ.C4,HZ.E4],
-    [HZ.F3,HZ.A3,HZ.C4],
-    [HZ.C4,HZ.E4,HZ.G4],
-    [HZ.G3,HZ.B3,HZ.D4],
-  ]
-
-  // Pre-composed melody: step → {f, d} | null
-  type Mel = {f:number,d:number}|null
-  const MEL: Mel[] = Array(STEPS).fill(null)
-  const put = (st:number,n:string,d:number) => { MEL[st]={f:HZ[n],d} }
-  put(0,'E5',2);  put(2,'D5',2);  put(4,'C5',2);  put(6,'A4',2)   // Bar 1 (Am)
-  put(8,'G4',2);  put(10,'A4',2); put(12,'C5',4)
-  put(16,'F5',3); put(19,'E5',1); put(20,'D5',4)                   // Bar 2 (F)
-  put(24,'C5',2); put(26,'D5',2); put(28,'E5',4)
-  put(32,'G4',2); put(34,'A4',2); put(36,'C5',4)                   // Bar 3 (C)
-  put(40,'E5',2); put(42,'G5',2); put(44,'E5',4)
-  put(48,'D5',4); put(52,'B4',4)                                    // Bar 4 (G)
-  put(56,'G4',2); put(58,'A4',2); put(60,'B4',2); put(62,'D5',2)
-
-  const ensureCtx = () => {
-    if (!ctxRef.current) {
-      const ctx    = new AudioContext()
-      const master = ctx.createGain()
-      master.gain.value = 0
-      master.connect(ctx.destination)
-      // 8th-note echo with feedback
-      const echoDelay    = ctx.createDelay(0.3)
-      const echoFeedback = ctx.createGain()
-      const echoWet      = ctx.createGain()
-      echoDelay.delayTime.value = S * 2
-      echoFeedback.gain.value   = 0.28
-      echoWet.gain.value        = 0.20
-      echoDelay.connect(echoFeedback)
-      echoFeedback.connect(echoDelay)
-      echoDelay.connect(echoWet)
-      echoWet.connect(master)
-      ctxRef.current    = ctx
-      masterRef.current = master
-      echoInRef.current = echoDelay
-    }
-    return { ctx: ctxRef.current!, master: masterRef.current! }
-  }
-
-  const kick = (ctx: AudioContext, dst: GainNode, t: number) => {
-    const osc = ctx.createOscillator(), g = ctx.createGain()
-    osc.connect(g); g.connect(dst)
-    osc.frequency.setValueAtTime(60, t)
-    osc.frequency.exponentialRampToValueAtTime(0.01, t + 0.38)
-    g.gain.setValueAtTime(1.6, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.38)
-    osc.start(t); osc.stop(t + 0.39)
-  }
-
-  const snare = (ctx: AudioContext, dst: GainNode, t: number) => {
-    const len  = Math.floor(ctx.sampleRate * 0.13)
-    const buf  = ctx.createBuffer(1, len, ctx.sampleRate)
-    const data = buf.getChannelData(0)
-    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1
-    const src = ctx.createBufferSource(), bp = ctx.createBiquadFilter(), g = ctx.createGain()
-    src.buffer = buf; bp.type = 'bandpass'; bp.frequency.value = 1800; bp.Q.value = 0.8
-    src.connect(bp); bp.connect(g); g.connect(dst)
-    g.gain.setValueAtTime(0.65, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.13)
-    src.start(t); src.stop(t + 0.14)
-    const osc2 = ctx.createOscillator(), g2 = ctx.createGain()
-    osc2.type = 'triangle'; osc2.frequency.value = 200
-    osc2.connect(g2); g2.connect(dst)
-    g2.gain.setValueAtTime(0.35, t); g2.gain.exponentialRampToValueAtTime(0.001, t + 0.07)
-    osc2.start(t); osc2.stop(t + 0.08)
-  }
-
-  const hihat = (ctx: AudioContext, dst: GainNode, t: number, vol: number, decay: number) => {
-    const len  = Math.floor(ctx.sampleRate * (decay + 0.01))
-    const buf  = ctx.createBuffer(1, len, ctx.sampleRate)
-    const data = buf.getChannelData(0)
-    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1
-    const src = ctx.createBufferSource(), hp = ctx.createBiquadFilter(), g = ctx.createGain()
-    src.buffer = buf; hp.type = 'highpass'; hp.frequency.value = 9000
-    src.connect(hp); hp.connect(g); g.connect(dst)
-    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + decay)
-    src.start(t); src.stop(t + decay + 0.01)
-  }
-
-  const bass = (ctx: AudioContext, dst: GainNode, freq: number, t: number, dur: number) => {
-    const osc = ctx.createOscillator(), lp = ctx.createBiquadFilter(), g = ctx.createGain()
-    osc.type = 'sawtooth'; osc.frequency.value = freq
-    lp.type = 'lowpass'; lp.frequency.value = 220; lp.Q.value = 3
-    osc.connect(lp); lp.connect(g); g.connect(dst)
-    g.gain.setValueAtTime(0, t)
-    g.gain.linearRampToValueAtTime(0.65, t + 0.01)
-    g.gain.setValueAtTime(0.45, t + dur - 0.03)
-    g.gain.linearRampToValueAtTime(0, t + dur)
-    osc.start(t); osc.stop(t + dur + 0.01)
-  }
-
-  const lead = (ctx: AudioContext, dst: GainNode, freq: number, t: number, dur: number) => {
-    const o1 = ctx.createOscillator(), o2 = ctx.createOscillator()
-    const lp = ctx.createBiquadFilter(), g = ctx.createGain()
-    o1.type = 'square'; o1.frequency.value = freq
-    o2.type = 'square'; o2.frequency.value = freq * 1.006
-    lp.type = 'lowpass'; lp.frequency.value = 2400; lp.Q.value = 2
-    o1.connect(lp); o2.connect(lp); lp.connect(g); g.connect(dst)
-    if (echoInRef.current) g.connect(echoInRef.current)
-    g.gain.setValueAtTime(0, t)
-    g.gain.linearRampToValueAtTime(0.22, t + 0.012)
-    g.gain.setValueAtTime(0.18, t + dur - 0.05)
-    g.gain.linearRampToValueAtTime(0, t + dur)
-    o1.start(t); o2.start(t); o1.stop(t+dur+0.01); o2.stop(t+dur+0.01)
-  }
-
-  const pad = (ctx: AudioContext, dst: GainNode, freqs: number[], t: number, dur: number) => {
-    for (const freq of freqs) {
-      const osc = ctx.createOscillator(), lp = ctx.createBiquadFilter(), g = ctx.createGain()
-      osc.type = 'sine'; osc.frequency.value = freq
-      lp.type = 'lowpass'; lp.frequency.value = 1400
-      osc.connect(lp); lp.connect(g); g.connect(dst)
-      if (echoInRef.current) g.connect(echoInRef.current)
-      g.gain.setValueAtTime(0, t)
-      g.gain.linearRampToValueAtTime(0.07, t + 0.45)
-      g.gain.setValueAtTime(0.07, t + dur - 0.35)
-      g.gain.linearRampToValueAtTime(0, t + dur)
-      osc.start(t); osc.stop(t + dur + 0.01)
-    }
-  }
-
-  const schedule = useCallback(() => {
-    const ctx = ctxRef.current, master = masterRef.current
-    if (!ctx || !master) return
-    while (nextRef.current < ctx.currentTime + AHEAD) {
-      const t  = nextRef.current
-      const st = stepRef.current % STEPS
-      const lv = levelRef.current
-
-      if (st % 16 === 0) pad(ctx, master, PADS[Math.floor(st/16)], t, S * 16)
-      const note = MEL[st]
-      if (note) lead(ctx, master, note.f, t, S * note.d * 0.88)
-
-      if (lv >= 1) {
-        if (st % 8 === 0)   kick(ctx, master, t)
-        if (st % 8 === 4)   snare(ctx, master, t)
-        if (st % 2 === 0)   hihat(ctx, master, t, 0.20, 0.05)
-        if (st % 16 === 14) hihat(ctx, master, t, 0.25, 0.30)
-      }
-      if (lv >= 2 && st % 2 === 0)
-        bass(ctx, master, BASS[Math.floor(st/2)], t, S * 1.7)
-      if (lv >= 3 && st % 2 === 1) hihat(ctx, master, t, 0.10, 0.04)
-
-      stepRef.current++
-      nextRef.current += S
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  const stop = useCallback(() => {
-    if (schedRef.current) { clearInterval(schedRef.current); schedRef.current = null }
-    const ctx = ctxRef.current, master = masterRef.current
-    if (ctx && master) {
-      master.gain.cancelScheduledValues(ctx.currentTime)
-      master.gain.setValueAtTime(master.gain.value, ctx.currentTime)
-      master.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.8)
-    }
-    setPlaying(false)
-  }, [])
-
-  const start = useCallback(() => {
-    const { ctx, master } = ensureCtx()
-    if (ctx.state === 'suspended') ctx.resume()
-    nextRef.current  = ctx.currentTime + 0.05
-    stepRef.current  = 0
-    master.gain.cancelScheduledValues(ctx.currentTime)
-    master.gain.setValueAtTime(0, ctx.currentTime)
-    master.gain.linearRampToValueAtTime(0.55, ctx.currentTime + 2)
-    schedRef.current = setInterval(schedule, MS)
-    setPlaying(true)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [schedule])
-
-  const toggle = useCallback(() => {
-    if (playing) stop(); else start()
-  }, [playing, stop, start])
-
-  useEffect(() => () => { stop() }, [stop])
-
-  return { playing, toggle, start }
+function todayStr() {
+  return new Date().toISOString().slice(0, 10)
 }
 
-function BuildingFloor({
-  floor, unlocked, income, onClick, empCount, hasEquipment
-}: {
-  floor: typeof FLOOR_DEFS[0]
-  unlocked: boolean
-  income: number
-  onClick: () => void
-  empCount: number
-  hasEquipment: boolean
-}) {
-  const [emps, setEmps]         = useState<EmpAnim[]>([])
-  const [cashPops, setCashPops] = useState<{id:number;x:number}[]>([])
-  const tickRef                 = useRef(0)
+// ─────────────────────────────────────────────────────────────
+//  SAVE / LOAD
+// ─────────────────────────────────────────────────────────────
 
-  useEffect(() => {
-    if (!unlocked || empCount === 0) { setEmps([]); return }
-    const count = Math.min(empCount, 4)
-    setEmps(Array.from({ length: count }, (_, i) => ({ id: i, x: 20 + i * 55, dir: i % 2 === 0 ? 1 : -1 })))
-  }, [unlocked, empCount])
+function saveState(s: GameState) {
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify({ ...s, lastSaved: Date.now() })) } catch {}
+}
 
+function loadState(): GameState {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY)
+    if (!raw) return defaultState()
+    return { ...defaultState(), ...JSON.parse(raw) }
+  } catch { return defaultState() }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  SFX (Web Audio)
+// ─────────────────────────────────────────────────────────────
+
+let _ctx: AudioContext | null = null
+function getCtx() {
+  if (!_ctx) _ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
+  return _ctx
+}
+function playTone(freq: number, dur: number, vol = 0.08, type: OscillatorType = 'sine') {
+  try {
+    const ctx = getCtx()
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.connect(gain); gain.connect(ctx.destination)
+    osc.frequency.value = freq; osc.type = type
+    gain.gain.setValueAtTime(vol, ctx.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur)
+    osc.start(); osc.stop(ctx.currentTime + dur)
+  } catch {}
+}
+function sfxWork()    { playTone(440, 0.05, 0.06, 'square') }
+function sfxBuy()     { playTone(660, 0.1,  0.07, 'sine');  setTimeout(() => playTone(880, 0.1, 0.07, 'sine'), 80) }
+function sfxShip()    { playTone(880, 0.15, 0.08, 'sine');  setTimeout(() => playTone(1100, 0.2, 0.06, 'sine'), 100) }
+function sfxGem()     { playTone(1200, 0.12, 0.07, 'triangle') }
+function sfxMilestone(){ playTone(523, 0.15, 0.1); setTimeout(()=>playTone(659, 0.15, 0.1), 150); setTimeout(()=>playTone(784, 0.3, 0.1), 300) }
+
+export default function SiliconGrind() {
+  // ── State ──
+  const [gs, setGs] = useState<GameState>(defaultState)
+  const [loaded, setLoaded] = useState(false)
+  const [sheet, setSheet] = useState<string | null>(null)       // active bottom sheet
+  const [teamTab, setTeamTab] = useState<'hire'|'offices'|'tools'|'equip'>('hire')
+  const [resTab, setResTab] = useState<'dev'|'infra'|'data'>('dev')
+  const [floats, setFloats] = useState<FloatItem[]>([])
+  const [alerts, setAlerts] = useState<AlertItem[]>([])
+  const [banner, setBanner] = useState<string | null>(null)     // top flash banner
+  const [shipCd, setShipCd] = useState(0)                      // ship cooldown remaining
+  const [boostEnd, setBoostEnd] = useState(0)                   // timestamp when boost ends
+  const [productivity, setProductivity] = useState(100)         // 0–100
+  const [spinResult, setSpinResult] = useState<null | typeof SPIN_REWARDS[0]>(null)
+  const [spinAnimIdx, setSpinAnimIdx] = useState<number | null>(null)
+  const [showOfflineModal, setShowOfflineModal] = useState(false)
+  const [offlineEarned, setOfflineEarned] = useState(0)
+  const [showIPO, setShowIPO] = useState(false)
+  const [investorActive, setInvestorActive] = useState(false)
+  const [investorTaps, setInvestorTaps] = useState(0)
+  const [investorTimer, setInvestorTimer] = useState(10)
+  const [investorDone, setInvestorDone] = useState(false)
+  const [nameEdit, setNameEdit] = useState(false)
+  const [nameVal, setNameVal] = useState('')
+
+  const lastWorkRef = useRef(0)
+  const gsRef = useRef(gs)
+  useEffect(() => { gsRef.current = gs }, [gs])
+
+  const income = useMemo(() => computeIncome(gs), [gs])
+  const boostActive = boostEnd > Date.now()
+  const boostMult = boostActive ? 2 : 1
+  const effectiveIncome = income * boostMult * (gs.prestigeLevel + 1)
+
+  // ── Load on mount ──
   useEffect(() => {
-    if (!unlocked || empCount === 0) return
-    const iv = setInterval(() => {
-      tickRef.current++
-      setEmps(prev => prev.map(e => {
-        let nx = e.x + e.dir * 0.9
-        let nd = e.dir
-        if (nx > 255) { nx = 255; nd = -1 }
-        if (nx < 10)  { nx = 10;  nd = 1  }
-        return { ...e, x: nx, dir: nd }
-      }))
-      if (income > 0 && tickRef.current % 28 === 0) {
-        const id = Date.now() + Math.random()
-        setCashPops(p => [...p, { id, x: 60 + Math.random() * 140 }])
-        setTimeout(() => setCashPops(p => p.filter(c => c.id !== id)), 1100)
+    const saved = loadState()
+    const today = todayStr()
+
+    // offline earnings
+    const elapsed = Math.min((Date.now() - (saved.lastSaved || Date.now())) / 1000, OFFLINE_CAP)
+    const offEarnings = Math.floor(computeIncome(saved) * 0.5 * elapsed)
+    if (offEarnings > 100 && saved.lastSaved) {
+      setOfflineEarned(offEarnings)
+      setShowOfflineModal(true)
+    }
+
+    // login streak
+    let streak = saved.loginStreak
+    let streakClaimed = saved.streakClaimed
+    if (saved.lastLoginDate !== today) {
+      const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1)
+      const yStr = yesterday.toISOString().slice(0, 10)
+      if (saved.lastLoginDate === yStr) { streak = (streak % 7) + 1 } else { streak = 1 }
+      streakClaimed = false
+    }
+
+    // daily missions
+    let dailyMissions = saved.dailyMissions
+    if (saved.missionDate !== today) {
+      const seed = parseInt(today.replace(/-/g, ''), 10)
+      dailyMissions = pickMissions(seed)
+    }
+
+    const next: GameState = {
+      ...saved,
+      loginStreak: streak,
+      streakClaimed,
+      lastLoginDate: today,
+      missionDate: today,
+      dailyMissions,
+      dailyShips:  saved.missionDate !== today ? 0 : (saved.dailyShips  || 0),
+      dailyHires:  saved.missionDate !== today ? 0 : (saved.dailyHires  || 0),
+      dailyEarned: saved.missionDate !== today ? 0 : (saved.dailyEarned || 0),
+      dailyClicks: saved.missionDate !== today ? 0 : (saved.dailyClicks || 0),
+      dailySpent:  saved.missionDate !== today ? 0 : (saved.dailySpent  || 0),
+    }
+
+    setGs(next)
+    setLoaded(true)
+
+    // welcome bonus
+    if (!localStorage.getItem(VISITED_KEY)) {
+      localStorage.setItem(VISITED_KEY, '1')
+      setTimeout(() => {
+        setGs(prev => ({ ...prev, cash: prev.cash + 1000, gems: prev.gems + 100, welcomeClaimed: true }))
+        showBanner('🎉 Welcome! +100 💎 and $1,000 to get you started!')
+      }, 800)
+    }
+  }, []) // eslint-disable-line
+
+  // ── Auto-save ──
+  useEffect(() => {
+    if (loaded) saveState(gs)
+  }, [gs, loaded])
+
+  // ── Passive income tick ──
+  useEffect(() => {
+    if (!loaded) return
+    const id = setInterval(() => {
+      const s = gsRef.current
+      const bActive = boostEnd > Date.now()
+      const bMult = bActive ? 2 : 1
+      const inc = computeIncome(s) * bMult * (s.prestigeLevel + 1)
+      if (inc > 0) {
+        setGs(prev => {
+          const earned = prev.totalEarned + inc
+          const cv = prev.companyValue + inc
+          return {
+            ...prev,
+            cash: prev.cash + inc,
+            totalEarned: earned,
+            companyValue: cv,
+            dailyEarned: prev.dailyEarned + inc,
+          }
+        })
+        // float income indicator occasionally
+        if (Math.random() < 0.3) {
+          addFloat('+' + fmtCash(inc) + '/s', undefined, '#4ade80')
+        }
       }
-    }, 50)
-    return () => clearInterval(iv)
-  }, [unlocked, empCount, income])
+      // productivity recover
+      setProductivity(p => Math.min(100, p + 2))
+    }, 1000)
+    return () => clearInterval(id)
+  }, [loaded, boostEnd]) // eslint-disable-line
 
-  if (!unlocked) {
+  // ── Ship cooldown tick ──
+  useEffect(() => {
+    if (shipCd <= 0) return
+    const id = setInterval(() => setShipCd(c => Math.max(0, c - 1)), 1000)
+    return () => clearInterval(id)
+  }, [shipCd])
+
+  // ── Random events ──
+  useEffect(() => {
+    if (!loaded) return
+    const id = setInterval(() => {
+      if (Math.random() > 0.04) return
+      const ev = RANDOM_EVENTS[Math.floor(Math.random() * RANDOM_EVENTS.length)]
+      const s = gsRef.current
+      const val = ev.type === 'good'
+        ? Math.max(ev.base, Math.floor(s.companyValue * ev.pct))
+        : Math.max(ev.base, -Math.floor(s.companyValue * ev.pct))
+      const alertId = Date.now() + Math.random()
+      setAlerts(prev => [...prev, { id: alertId, text: ev.text, type: ev.type as 'good'|'bad', reward: val }].slice(-3))
+      setTimeout(() => setAlerts(prev => prev.filter(a => a.id !== alertId)), 5000)
+      setGs(prev => ({
+        ...prev,
+        cash: Math.max(0, prev.cash + val),
+        companyValue: Math.max(0, prev.companyValue + val),
+        totalEarned: ev.type === 'good' ? prev.totalEarned + val : prev.totalEarned,
+      }))
+    }, 5000)
+    return () => clearInterval(id)
+  }, [loaded])
+
+  // ── Check milestones ──
+  useEffect(() => {
+    const s = gs
+    for (const m of MILESTONES) {
+      if (s.milestones[m.id]) continue
+      let met = false
+      if (m.type === 'earned' && s.totalEarned >= m.goal) met = true
+      if (m.type === 'emp'    && totalEmps(s) >= m.goal)  met = true
+      if (!met) continue
+      setGs(prev => {
+        const updates: Partial<GameState> = {
+          milestones: { ...prev.milestones, [m.id]: true },
+        }
+        if (m.reward.gems) updates.gems = (prev.gems || 0) + m.reward.gems
+        if (m.reward.cash) updates.cash = prev.cash + m.reward.cash
+        return { ...prev, ...updates }
+      })
+      showBanner(`🏆 Milestone: ${m.label}! +${m.reward.gems ? m.reward.gems + ' 💎' : fmtCash(m.reward.cash!)}`)
+      sfxMilestone()
+    }
+  }, [gs.totalEarned, gs.employees]) // eslint-disable-line
+
+  // ── IPO check ──
+  useEffect(() => {
+    if (gs.companyValue >= IPO_THRESHOLD && !showIPO) setShowIPO(true)
+  }, [gs.companyValue]) // eslint-disable-line
+
+  // ── Investor meeting timer ──
+  useEffect(() => {
+    if (!investorActive) return
+    if (investorTimer <= 0) { setInvestorActive(false); setInvestorDone(true); return }
+    const id = setTimeout(() => setInvestorTimer(t => t - 1), 1000)
+    return () => clearTimeout(id)
+  }, [investorActive, investorTimer])
+
+  // ── Live event timer ──
+  useEffect(() => {
+    if (!loaded) return
+    const id = setInterval(() => {
+      setGs(prev => {
+        let t = prev.liveEventTimer - 1
+        let ev = prev.liveEvent
+        if (t <= 0) {
+          // rotate to next event
+          const idx = (LIVE_EVENTS.findIndex(e => e.id === prev.liveEvent.id) + 1) % LIVE_EVENTS.length
+          ev = { id: LIVE_EVENTS[idx].id, progress: 0, claimed: false }
+          t = 172800
+        }
+        return { ...prev, liveEventTimer: t, liveEvent: ev }
+      })
+    }, 1000)
+    return () => clearInterval(id)
+  }, [loaded])
+
+  // ── Helpers ──
+  const addFloat = useCallback((val: string, rect?: DOMRect, color?: string) => {
+    const id = Date.now() + Math.random()
+    const x = rect ? rect.left + rect.width / 2 : 120 + Math.random() * 160
+    const y = rect ? rect.top : 200 + Math.random() * 60
+    setFloats(f => [...f, { id, x, y, val, color }].slice(-8))
+    setTimeout(() => setFloats(f => f.filter(fl => fl.id !== id)), 1600)
+  }, [])
+
+  const spawnBurst = useCallback((rect: DOMRect) => {
+    const layer = document.getElementById('sg-burst-layer')
+    if (!layer) return
+    const cx = rect.left + rect.width / 2
+    const cy = rect.top + rect.height / 2
+    const SYMS = ['💰', '$', '💵', '🪙', '$', '💲']
+    for (let i = 0; i < 6; i++) {
+      const angle = (i / 6) * Math.PI * 2 - Math.PI / 2 + (Math.random() - 0.5) * 0.8
+      const dist = 45 + Math.random() * 55
+      const dx = Math.cos(angle) * dist
+      const dy = Math.sin(angle) * dist - 20
+      const el = document.createElement('div')
+      el.textContent = SYMS[i % SYMS.length]
+      el.style.cssText = [
+        `position:fixed`, `left:${cx}px`, `top:${cy}px`,
+        `font-size:${14 + Math.random() * 8}px`, `pointer-events:none`,
+        `transform:translate(-50%,-50%)`,
+        `animation:sgburst 0.75s ease-out forwards`,
+        `--dx:${dx}px`, `--dy:${dy}px`, `font-weight:900`,
+        `color:${i % 2 === 0 ? '#4ade80' : '#fbbf24'}`,
+        `z-index:300`,
+      ].join(';')
+      layer.appendChild(el)
+      el.addEventListener('animationend', () => el.remove(), { once: true })
+    }
+  }, [])
+
+  const showBanner = (text: string) => {
+    setBanner(text)
+    setTimeout(() => setBanner(null), 3500)
+  }
+
+  // ── WORK button ──
+  const handleWork = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+    const now = Date.now()
+    if (now - lastWorkRef.current < 120) return
+    lastWorkRef.current = now
+    const rect = e.currentTarget.getBoundingClientRect()
+    const s = gsRef.current
+    const bMult = boostEnd > Date.now() ? 2 : 1
+    const gain = Math.floor((10 + totalEmps(s) * 2) * bMult)
+    spawnBurst(rect)
+    addFloat('+' + fmtCash(gain), rect)
+    if (s.sfxEnabled) sfxWork()
+    setProductivity(p => Math.max(0, p - 8))
+    setGs(prev => ({
+      ...prev,
+      cash: prev.cash + gain,
+      totalEarned: prev.totalEarned + gain,
+      companyValue: prev.companyValue + gain,
+      dailyEarned: prev.dailyEarned + gain,
+      dailyClicks: prev.dailyClicks + 1,
+    }))
+  }, [boostEnd, spawnBurst, addFloat])
+
+  // ── Ship Feature ──
+  const handleShip = useCallback(() => {
+    if (shipCd > 0) return
+    const s = gsRef.current
+    const reward = Math.max(500, effectiveIncome * 30)
+    const earned = Math.floor(reward)
+    addFloat('🚀 Shipped! +' + fmtCash(earned))
+    if (s.sfxEnabled) sfxShip()
+    setShipCd(SHIP_COOLDOWN)
+    setGs(prev => {
+      const ships = prev.totalShips + 1
+      const dShips = prev.dailyShips + 1
+      // update live event
+      let liveEvent = prev.liveEvent
+      const evDef = LIVE_EVENTS.find(e => e.id === liveEvent.id)
+      if (evDef && evDef.type === 'ships' && !liveEvent.claimed) {
+        liveEvent = { ...liveEvent, progress: liveEvent.progress + 1 }
+      }
+      return {
+        ...prev,
+        cash: prev.cash + earned,
+        totalEarned: prev.totalEarned + earned,
+        companyValue: prev.companyValue + earned,
+        dailyEarned: prev.dailyEarned + earned,
+        totalShips: ships,
+        dailyShips: dShips,
+        liveEvent,
+      }
+    })
+    showBanner(`🚀 Feature Shipped! +${fmtCash(earned)}`)
+  }, [shipCd, effectiveIncome, addFloat])
+
+  // ── Hire Employee ──
+  const handleHire = useCallback((empId: string) => {
+    const s = gsRef.current
+    const owned = s.employees[empId] || 0
+    const cost = empCost(empId, owned)
+    if (s.cash < cost) return
+    if (s.sfxEnabled) sfxBuy()
+    setGs(prev => {
+      const employees = { ...prev.employees, [empId]: (prev.employees[empId] || 0) + 1 }
+      const hires = prev.totalHires + 1
+      const dHires = prev.dailyHires + 1
+      let liveEvent = prev.liveEvent
+      const evDef = LIVE_EVENTS.find(e => e.id === liveEvent.id)
+      if (evDef && evDef.type === 'hires' && !liveEvent.claimed) {
+        liveEvent = { ...liveEvent, progress: liveEvent.progress + 1 }
+      }
+      return {
+        ...prev,
+        cash: prev.cash - cost,
+        dailySpent: prev.dailySpent + cost,
+        employees,
+        totalHires: hires,
+        dailyHires: dHires,
+        liveEvent,
+      }
+    })
+    const emp = EMPLOYEES.find(e => e.id === empId)!
+    addFloat(`${emp.emoji} Hired!`)
+  }, [addFloat])
+
+  // ── Buy Office ──
+  const handleBuyOffice = useCallback((idx: number) => {
+    const s = gsRef.current
+    const off = OFFICES[idx]
+    if (s.cash < off.cost || s.officeIdx >= idx) return
+    if (s.sfxEnabled) sfxBuy()
+    setGs(prev => ({
+      ...prev,
+      cash: prev.cash - off.cost,
+      dailySpent: prev.dailySpent + off.cost,
+      officeIdx: idx,
+    }))
+    showBanner(`🏢 Upgraded to ${off.name}!`)
+  }, [])
+
+  // ── Buy Tool ──
+  const handleBuyTool = useCallback((toolId: string) => {
+    const s = gsRef.current
+    const t = TOOLS.find(t => t.id === toolId)!
+    if (s.cash < t.cost || s.tools[toolId]) return
+    if (s.sfxEnabled) sfxBuy()
+    setGs(prev => ({
+      ...prev,
+      cash: prev.cash - t.cost,
+      dailySpent: prev.dailySpent + t.cost,
+      tools: { ...prev.tools, [toolId]: true },
+    }))
+    addFloat(`${t.emoji} ${t.name} active!`)
+  }, [addFloat])
+
+  // ── Buy Equipment ──
+  const handleBuyEquip = useCallback((eqId: string) => {
+    const s = gsRef.current
+    const eq = EQUIPMENT.find(e => e.id === eqId)!
+    if (s.cash < eq.cost || s.equipment[eqId]) return
+    if (s.sfxEnabled) sfxBuy()
+    setGs(prev => ({
+      ...prev,
+      cash: prev.cash - eq.cost,
+      dailySpent: prev.dailySpent + eq.cost,
+      equipment: { ...prev.equipment, [eqId]: true },
+    }))
+    addFloat(`${eq.emoji} Equipped!`)
+  }, [addFloat])
+
+  // ── Research ──
+  const handleResearch = useCallback((nodeId: string) => {
+    const s = gsRef.current
+    const node = RESEARCH.find(r => r.id === nodeId)!
+    if (s.gems < node.cost || s.research[nodeId]) return
+    if (node.prev && !s.research[node.prev]) return
+    if (s.sfxEnabled) sfxGem()
+    setGs(prev => ({
+      ...prev,
+      gems: prev.gems - node.cost,
+      research: { ...prev.research, [nodeId]: true },
+    }))
+    addFloat(`🔬 +${Math.round(node.boost * 100)}% income!`)
+  }, [addFloat])
+
+  // ── Boost (ad) ──
+  const handleWatchAd = useCallback((type: 'boost'|'gems'|'cash'|'spin') => {
+    const s = gsRef.current
+    if (type === 'boost') {
+      setBoostEnd(Date.now() + BOOST_DURATION * 1000)
+      showBanner('⚡ 2× Boost active for 60 seconds!')
+    } else if (type === 'gems') {
+      setGs(prev => ({ ...prev, gems: prev.gems + 15 }))
+      showBanner('💎 +15 Gems! Thanks for watching!')
+    } else if (type === 'cash') {
+      const reward = Math.max(1000, Math.floor(Math.max(effectiveIncome * 60, s.companyValue * 0.01)))
+      setGs(prev => ({
+        ...prev,
+        cash: prev.cash + reward,
+        totalEarned: prev.totalEarned + reward,
+      }))
+      showBanner('💰 +' + fmtCash(reward) + ' from ad reward!')
+    } else if (type === 'spin') {
+      setGs(prev => ({ ...prev, spunDate: '' }))
+      showBanner('🎰 Daily Spin reset!')
+    }
+  }, [effectiveIncome])
+
+  // ── Daily Spin ──
+  const handleSpin = useCallback(() => {
+    const s = gsRef.current
+    const today = todayStr()
+    if (s.spunDate === today) return
+    const idx = Math.floor(Math.random() * SPIN_REWARDS.length)
+    setSpinAnimIdx(idx)
+    setTimeout(() => {
+      const reward = SPIN_REWARDS[idx]
+      setSpinResult(reward)
+      setSpinAnimIdx(null)
+      setGs(prev => {
+        const updates: Partial<GameState> = { spunDate: today }
+        if (reward.type === 'cash')  updates.cash  = prev.cash + reward.val
+        if (reward.type === 'gems')  updates.gems  = prev.gems + reward.val
+        if (reward.type === 'boost') setBoostEnd(Date.now() + reward.val * 1000)
+        return { ...prev, ...updates }
+      })
+      if (s.sfxEnabled) sfxGem()
+    }, 2000)
+  }, [])
+
+  // ── Claim Live Event ──
+  const handleClaimEvent = useCallback(() => {
+    const s = gsRef.current
+    const evDef = LIVE_EVENTS.find(e => e.id === s.liveEvent.id) ?? LIVE_EVENTS[0]
+    if (s.liveEvent.claimed || s.liveEvent.progress < evDef.goal) return
+    setGs(prev => {
+      const updates: Partial<GameState> = {
+        liveEvent: { ...prev.liveEvent, claimed: true }
+      }
+      if (evDef.rewardType === 'gems') updates.gems = prev.gems + evDef.reward
+      if (evDef.rewardType === 'cash') updates.cash = prev.cash + evDef.reward
+      return { ...prev, ...updates }
+    })
+    showBanner(`🎉 Event complete! ${evDef.rewardDesc} claimed!`)
+    if (gs.sfxEnabled) sfxMilestone()
+  }, [gs.sfxEnabled])
+
+  // ── Claim mission ──
+  const handleClaimMission = useCallback((mIdx: number) => {
+    const s = gsRef.current
+    const m = s.dailyMissions[mIdx]
+    if (!m || m.claimed || getMissionProgress(m, s) < m.goal) return
+    if (s.sfxEnabled) sfxGem()
+    setGs(prev => {
+      const missions = prev.dailyMissions.map((mis, i) => i === mIdx ? { ...mis, claimed: true } : mis)
+      const updates: Partial<GameState> = { dailyMissions: missions }
+      if (m.reward.gems) updates.gems = prev.gems + m.reward.gems
+      if (m.reward.cash) updates.cash = prev.cash + m.reward.cash
+      return { ...prev, ...updates }
+    })
+    addFloat(m.reward.gems ? `+${m.reward.gems} 💎` : `+${fmtCash(m.reward.cash!)}`)
+  }, [addFloat])
+
+  // ── Claim streak ──
+  const handleClaimStreak = useCallback(() => {
+    const s = gsRef.current
+    if (s.streakClaimed) return
+    const day = ((s.loginStreak - 1) % 7) + 1
+    const rewards: Record<number, {gems?:number; cash?:number}> = {
+      1:{gems:10}, 2:{gems:20}, 3:{cash:5000}, 4:{gems:35}, 5:{cash:15000}, 6:{gems:75}, 7:{gems:150,cash:50000}
+    }
+    const r = rewards[day] || {}
+    if (s.sfxEnabled) sfxMilestone()
+    setGs(prev => {
+      const cv = prev.companyValue
+      const updates: Partial<GameState> = { streakClaimed: true }
+      if (r.gems) updates.gems = prev.gems + r.gems
+      if (r.cash) {
+        const base = r.cash
+        const scaled = Math.max(base, Math.floor(cv * (day === 3 ? 0.01 : 0.02)))
+        updates.cash = prev.cash + scaled
+      }
+      return { ...prev, ...updates }
+    })
+    showBanner(`📅 Day ${day} streak reward claimed!`)
+  }, [])
+
+  // ── IPO ──
+  const handleIPO = useCallback(() => {
+    if (gs.companyValue < IPO_THRESHOLD) return
+    setGs(prev => ({
+      ...defaultState(),
+      gems: prev.gems,
+      prestigeLevel: prev.prestigeLevel + 1,
+      companyName: prev.companyName,
+      sfxEnabled: prev.sfxEnabled,
+      welcomeClaimed: true,
+    }))
+    setShowIPO(false)
+    showBanner(`🎉 IPO Complete! Now at Prestige ${gs.prestigeLevel + 1}! Income ×${gs.prestigeLevel + 2}`)
+    sfxMilestone()
+  }, [gs.companyValue, gs.prestigeLevel, gs.gems, gs.companyName, gs.sfxEnabled])
+
+  // ── Investor meeting ──
+  const handleStartInvestor = () => {
+    setInvestorTaps(0)
+    setInvestorTimer(10)
+    setInvestorDone(false)
+    setInvestorActive(true)
+  }
+  const handleInvestorTap = () => {
+    if (!investorActive) return
+    setInvestorTaps(t => t + 1)
+    const perTap = Math.max(50, Math.floor(gs.companyValue * 0.0005))
+    addFloat('+' + fmtCash(perTap))
+    setGs(prev => ({ ...prev, cash: prev.cash + perTap }))
+  }
+  const handleInvestorEnd = () => {
+    setInvestorActive(false)
+    setInvestorDone(true)
+    showBanner(`🤝 Investor meeting done! ${investorTaps} taps!`)
+  }
+
+  // ── Claim offline ──
+  const handleClaimOffline = (double: boolean) => {
+    if (double && gs.gems < 20) return
+    const earn = double ? offlineEarned * 2 : offlineEarned
+    setGs(prev => ({
+      ...prev,
+      cash: prev.cash + earn,
+      totalEarned: prev.totalEarned + earn,
+      gems: double ? prev.gems - 20 : prev.gems,
+    }))
+    setShowOfflineModal(false)
+    showBanner(`💤 Offline earnings: +${fmtCash(earn)} claimed!`)
+  }
+
+  // ── Tap alert ──
+  const handleTapAlert = (a: AlertItem) => {
+    setAlerts(prev => prev.filter(x => x.id !== a.id))
+  }
+
+  // ── Tab unlocks ──
+  const tabsUnlocked = {
+    team:     gs.totalEarned >= 200,
+    research: gs.totalEarned >= 2000,
+    ship:     gs.totalEarned >= 5000,
+    more:     gs.totalEarned >= 10000,
+  }
+
+  const office = OFFICES[gs.officeIdx]
+  const stage = getStage(gs.companyValue)
+  const nextStage = getNextStage(gs.companyValue)
+  const stageProgress = nextStage
+    ? Math.min(1, (gs.companyValue - stage.min) / (nextStage.min - stage.min))
+    : 1
+  const evDef = LIVE_EVENTS.find(e => e.id === gs.liveEvent.id) ?? LIVE_EVENTS[0]
+  const prodColor = productivity > 60 ? '#4ade80' : productivity > 30 ? '#fbbf24' : '#f87171'
+
+  if (!loaded) {
     return (
-      <div onClick={onClick} style={{ height: 68, background: '#080810', border: '1px dashed #1a1a2e', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', marginBottom: 3 }}>
-        <span style={{ fontSize: 10, color: '#2a2a3e' }}>🔒 {floor.name}</span>
+      <div style={{
+        background:'#0d0d1a', height:'100dvh', display:'flex',
+        alignItems:'center', justifyContent:'center', flexDirection:'column', gap:16
+      }}>
+        <div style={{ fontSize:48 }}>⚙️</div>
+        <div style={{ color:'#4ade80', fontFamily:'var(--font)', fontWeight:700, fontSize:20 }}>
+          SILICON GRIND
+        </div>
+        <div style={{
+          width:40, height:40, border:'3px solid #4ade80',
+          borderTopColor:'transparent', borderRadius:'50%',
+          animation:'sg-spin 0.8s linear infinite'
+        }} />
       </div>
     )
   }
 
   return (
-    <div onClick={onClick} style={{ height: 68, background: floor.color, border: `1px solid ${floor.accent}44`, borderRadius: 6, position: 'relative', overflow: 'hidden', cursor: 'pointer', marginBottom: 3 }}>
-      <div style={{ position:'absolute', top:4, left:8, fontSize:10, color:floor.accent, fontWeight:700, zIndex:2 }}>{floor.icon} {floor.name}</div>
-      {income > 0 && <div style={{ position:'absolute', top:4, right:8, fontSize:9, color:'#22c55e', zIndex:2 }}>+{fmt(income)}/s</div>}
+    <div id="sg-root" style={{ fontFamily:'var(--font)', background:'#0d0d1a', color:'#f0f0ff', display:'flex', flexDirection:'column', height:'100dvh', overflow:'hidden', userSelect:'none' }}>
+      <div id="sg-burst-layer" />
 
-      {[0,1,2].map(i => (
-        <div key={i} style={{ position:'absolute', bottom:13, left:24+i*82, width:52, height:9, background:`${floor.accent}33`, borderRadius:2 }}>
-          <div style={{ position:'absolute', top:-5, left:3, width:11, height:9, background:'#111', borderRadius:2, border:`1px solid ${floor.accent}55` }} />
+      {/* ── Floating text ── */}
+      {floats.map(fl => (
+        <div key={fl.id} style={{
+          position:'fixed', left:fl.x, top:fl.y, pointerEvents:'none',
+          zIndex:200, fontWeight:800, fontSize:15,
+          color: fl.color || '#fbbf24',
+          animation:'sg-rise 1.5s ease-out forwards',
+          textShadow:'0 1px 4px rgba(0,0,0,0.8)',
+          whiteSpace:'nowrap',
+        }}>
+          {fl.val}
         </div>
       ))}
 
-      {floor.id === 'serverroom' && (
-        <div style={{ position:'absolute', right:10, bottom:8, display:'flex', gap:3 }}>
-          {[0,1,2].map(i => (
-            <div key={i} style={{ width:6, height:22, background:'#0a1a0a', border:'1px solid #22c55e33', borderRadius:2, display:'flex', flexDirection:'column', alignItems:'center', gap:3, padding:'3px 0' }}>
-              <div style={{ width:3, height:3, borderRadius:'50%', background:'#22c55e', animation:`blink ${0.7+i*0.35}s infinite` }} />
-              <div style={{ width:3, height:3, borderRadius:'50%', background:'#f59e0b', animation:`blink ${1.1+i*0.25}s infinite` }} />
-            </div>
-          ))}
+      {/* ── Top flash banner ── */}
+      {banner && (
+        <div style={{
+          position:'fixed', top:0, left:0, right:0, zIndex:400,
+          background:'linear-gradient(135deg,#1c3a2a,#0f2d1a)',
+          borderBottom:'1px solid #4ade8055',
+          padding:'10px 16px', textAlign:'center',
+          fontSize:13, fontWeight:700, color:'#4ade80',
+          animation:'sg-milestone 3.5s ease-out forwards',
+        }}>
+          {banner}
         </div>
       )}
 
-      {floor.id === 'lobby' && hasEquipment && (
-        <div style={{ position:'absolute', right:18, bottom:11, width:38, height:7, background:'#166534', borderRadius:2, border:'1px solid #15803d' }}>
-          <div style={{ position:'absolute', left:'50%', top:0, width:1, height:7, background:'#fff' }} />
-        </div>
-      )}
-
-      {emps.map(e => (
-        <div key={e.id} style={{ position:'absolute', bottom:20, left:e.x, transition:'left 0.05s linear', zIndex:3 }}>
-          <div style={{ width:11, height:11, borderRadius:'50%', background:EMPLOYEES[e.id % EMPLOYEES.length]?.color||'#888', border:'1px solid #fff3', fontSize:7, display:'flex', alignItems:'center', justifyContent:'center', color:'#fff' }}>
-            {e.dir===1?'›':'‹'}
+      {/* ── Top HUD ── */}
+      <div style={{
+        flexShrink:0, background:'#0d0d1a',
+        borderBottom:'1px solid rgba(255,255,255,0.06)',
+        padding:'10px 12px 8px',
+      }}>
+        {/* Row 1: company name + stage */}
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:6 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+            <span style={{
+              background:'linear-gradient(135deg,#1a3a28,#0d2018)',
+              border:'1px solid #4ade8040', borderRadius:6,
+              padding:'2px 8px', fontSize:11, fontWeight:700, color:'#4ade80',
+            }}>{stage.label}</span>
+            {nameEdit ? (
+              <input
+                value={nameVal}
+                onChange={e => setNameVal(e.target.value)}
+                onBlur={() => { setGs(prev => ({ ...prev, companyName: nameVal || prev.companyName })); setNameEdit(false) }}
+                onKeyDown={e => { if (e.key === 'Enter') { setGs(prev => ({ ...prev, companyName: nameVal || prev.companyName })); setNameEdit(false) } }}
+                autoFocus
+                style={{
+                  background:'#1c1c35', border:'1px solid #4ade80', borderRadius:6,
+                  color:'#fff', padding:'2px 8px', fontSize:13, fontWeight:700,
+                  outline:'none', width:120,
+                }}
+              />
+            ) : (
+              <span
+                style={{ fontSize:14, fontWeight:800, color:'#f0f0ff', cursor:'pointer' }}
+                onClick={() => { setNameVal(gs.companyName); setNameEdit(true) }}
+              >
+                {gs.companyName} ✏️
+              </span>
+            )}
           </div>
-          <div style={{ width:7, height:9, background:EMPLOYEES[e.id%EMPLOYEES.length]?.color||'#555', margin:'0 auto', borderRadius:'2px 2px 0 0', opacity:0.75 }} />
+          <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+            {gs.prestigeLevel > 0 && (
+              <span style={{ fontSize:11, color:'#a78bfa', fontWeight:700 }}>P{gs.prestigeLevel}</span>
+            )}
+            {boostActive && (
+              <span style={{
+                background:'linear-gradient(135deg,#7c2d12,#92400e)',
+                border:'1px solid #fbbf24', borderRadius:6,
+                padding:'2px 6px', fontSize:10, fontWeight:800, color:'#fbbf24',
+                animation:'sg-boost-glow 1s ease-in-out infinite',
+              }}>⚡2×</span>
+            )}
+          </div>
         </div>
-      ))}
 
-      {cashPops.map(c => (
-        <div key={c.id} style={{ position:'absolute', bottom:28, left:c.x, fontSize:10, color:'#22c55e', fontWeight:700, animation:'floatUp 1.1s ease-out forwards', pointerEvents:'none', zIndex:5 }}>$</div>
-      ))}
+        {/* Row 2: Cash | Value | Gems */}
+        <div style={{ display:'flex', gap:6, marginBottom:6 }}>
+          <StatChip label="💰 Cash" value={fmtCash(gs.cash)} accent="#4ade80" />
+          <StatChip label="🏢 Value" value={fmtCash(gs.companyValue)} accent="#60a5fa" />
+          <StatChip label="💎 Gems" value={gs.gems.toString()} accent="#a78bfa" />
+        </div>
 
-      <div style={{ position:'absolute', bottom:0, left:0, right:0, height:2, background:`${floor.accent}44` }} />
-    </div>
-  )
-}
-
-function BuildingView({
-  officeIdx, totalEarned, getIncome, employees, equipment,
-  cash, setCash, setTotalEarned, addFloat,
-  ship, shipCooldown, watchAd, milestones, claimMilestone, upgradeOffice
-}: {
-  officeIdx: number; totalEarned: number; getIncome: ()=>number
-  employees: Record<string,number>; equipment: Record<string,boolean>
-  cash: number; setCash: (fn:(c:number)=>number)=>void
-  setTotalEarned: (fn:(t:number)=>number)=>void; addFloat: (val:string)=>void
-  ship: ()=>void; shipCooldown: number; watchAd: (type:string)=>void
-  milestones: MilestoneState[]; claimMilestone: (id:string)=>void; upgradeOffice: ()=>void
-}) {
-  const [zoom, setZoom]                   = useState(1)
-  const [panY, setPanY]                   = useState(0)
-  const [dragging, setDragging]           = useState(false)
-  const [lastY, setLastY]                 = useState(0)
-  const [selectedFloor, setSelectedFloor] = useState<typeof FLOOR_DEFS[0]|null>(null)
-  const lastDistRef                       = useRef<number|null>(null)
-
-  const office      = OFFICES[officeIdx]
-  const allFloors   = FLOOR_DEFS.slice(0, office.floors + 2)
-  const income      = getIncome()
-  const hasEquip    = Object.values(equipment).some(Boolean)
-
-  const floorEmpMap: Record<string,string[]> = {
-    devroom:['dev','datascientist'], design:['designer'], marketing:['marketer'],
-    sales:['sales'], datalab:['datascientist','pm'], boardroom:['pm','ceo'],
-    penthouse:['ceo','cto'], serverroom:['cto'], lobby:['sales'], rooftop:[],
-  }
-
-  const floorIncome  = (id:string) => (floorEmpMap[id]||[]).reduce((a,eid) => { const e=EMPLOYEES.find(x=>x.id===eid); return a+(e?e.income*(employees[eid]||0):0) }, 0) * office.multiplier
-  const floorEmpCount= (id:string) => (floorEmpMap[id]||[]).reduce((a,eid) => a+(employees[eid]||0), 0)
-
-  const handleMouseDown = (e:React.MouseEvent) => { setDragging(true); setLastY(e.clientY) }
-  const handleMouseMove = (e:React.MouseEvent) => { if (dragging) setPanY(p => p + e.movementY) }
-  const handleMouseUp   = () => setDragging(false)
-  const handleWheel     = (e:React.WheelEvent) => { e.preventDefault(); setZoom(z => Math.max(0.5, Math.min(2.5, z - e.deltaY*0.001))) }
-
-  const handleTouchStart = (e:React.TouchEvent) => { if (e.touches.length===1) { setDragging(true); setLastY(e.touches[0].clientY) } }
-  const handleTouchMove  = (e:React.TouchEvent) => {
-    if (e.touches.length===2) {
-      const dx=e.touches[0].clientX-e.touches[1].clientX, dy=e.touches[0].clientY-e.touches[1].clientY
-      const dist=Math.sqrt(dx*dx+dy*dy)
-      if (lastDistRef.current!==null) setZoom(z => Math.max(0.5, Math.min(2.5, z+(dist-lastDistRef.current!)*0.005)))
-      lastDistRef.current=dist
-    } else if (e.touches.length===1 && dragging) {
-      setPanY(p => p+(e.touches[0].clientY-lastY)); setLastY(e.touches[0].clientY)
-    }
-  }
-  const handleTouchEnd = () => { setDragging(false); lastDistRef.current=null }
-
-  const reversed = [...allFloors].reverse()
-
-  return (
-    <div>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
-        <div style={{ fontSize:11, color:'#666' }}>{office.emoji} {office.name} • {allFloors.filter(f=>totalEarned>=f.unlockAt).length} floors active</div>
-        <div style={{ display:'flex', gap:5 }}>
-          <button onClick={()=>setZoom(z=>Math.min(2.5,z+0.25))} style={{ background:'#1a1a2e', border:'1px solid #333', color:'#fff', borderRadius:5, padding:'3px 9px', cursor:'pointer', fontSize:15 }}>+</button>
-          <button onClick={()=>setZoom(1)} style={{ background:'#1a1a2e', border:'1px solid #333', color:'#666', borderRadius:5, padding:'3px 7px', cursor:'pointer', fontSize:10 }}>1x</button>
-          <button onClick={()=>setZoom(z=>Math.max(0.5,z-0.25))} style={{ background:'#1a1a2e', border:'1px solid #333', color:'#fff', borderRadius:5, padding:'3px 9px', cursor:'pointer', fontSize:15 }}>−</button>
+        {/* Row 3: Income/s + stage progress */}
+        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+          <span style={{ fontSize:11, color:'#8888aa', whiteSpace:'nowrap' }}>
+            +{fmtCash(effectiveIncome)}/s
+          </span>
+          <div style={{ flex:1, height:5, background:'#1c1c35', borderRadius:3, overflow:'hidden' }}>
+            <div style={{
+              height:'100%', width:(stageProgress * 100) + '%',
+              background:'linear-gradient(90deg,#60a5fa,#a78bfa)',
+              borderRadius:3, transition:'width 0.5s ease',
+            }} />
+          </div>
+          {nextStage && (
+            <span style={{ fontSize:10, color:'#8888aa', whiteSpace:'nowrap' }}>
+              {fmtCash(nextStage.min)}
+            </span>
+          )}
         </div>
       </div>
-      <div style={{ fontSize:9, color:'#333', textAlign:'center', marginBottom:5 }}>Drag to pan • Pinch/scroll to zoom • Tap floor to inspect</div>
 
-      <div
-        onMouseDown={handleMouseDown} onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}     onMouseLeave={handleMouseUp}
-        onWheel={handleWheel}
-        onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd}
-        style={{ height:400, overflow:'hidden', background:'#04040e', borderRadius:14, border:'1px solid #1a1a2e', cursor:dragging?'grabbing':'grab', position:'relative' }}
-      >
-        {/* stars */}
-        {[...Array(18)].map((_,i) => (
-          <div key={i} style={{ position:'absolute', width:1, height:1, background:'#fff', borderRadius:'50%', top:`${(i*11)%85}%`, left:`${(i*19)%100}%`, opacity:0.2+(i%4)*0.1 }} />
+      {/* ── News ticker ── */}
+      <div style={{
+        flexShrink:0, height:20, overflow:'hidden',
+        background:'#151528', borderBottom:'1px solid rgba(255,255,255,0.04)',
+        display:'flex', alignItems:'center',
+      }}>
+        <div style={{
+          whiteSpace:'nowrap', fontSize:11, color:'#8888aa',
+          animation:'sg-ticker 20s linear infinite',
+          paddingLeft:'100%',
+        }}>
+          {gs.companyName} — {stage.label} • {fmtCash(gs.companyValue)} valuation • +{fmtCash(effectiveIncome)}/s passive income • Prestige Level {gs.prestigeLevel} • Total Earned: {fmtCash(gs.totalEarned)} •
+        </div>
+      </div>
+
+      {/* ── Live Event Badge ── */}
+      <div style={{
+        position:'absolute', top:130, right:10, zIndex:100,
+      }}>
+        <div
+          onClick={() => setSheet('more')}
+          style={{
+            background:'linear-gradient(135deg,#1a1a35,#0d0d2a)',
+            border:`1px solid ${evDef.rewardType === 'gems' ? '#a78bfa55' : '#4ade8055'}`,
+            borderRadius:10, padding:'4px 8px', cursor:'pointer',
+            animation:'sg-alert-bob 2s ease-in-out infinite',
+          }}
+        >
+          <div style={{ fontSize:10, color:'#8888aa', marginBottom:1 }}>LIVE EVENT</div>
+          <div style={{ fontSize:11, fontWeight:700, color:'#f0f0ff' }}>{evDef.name}</div>
+          <div style={{ fontSize:10, color:'#4ade80' }}>
+            {gs.liveEvent.progress}/{evDef.goal} • {evDef.rewardDesc}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Floating alerts ── */}
+      <div style={{ position:'fixed', top:155, left:12, zIndex:150, display:'flex', flexDirection:'column', gap:4 }}>
+        {alerts.map(a => (
+          <div
+            key={a.id}
+            onClick={() => handleTapAlert(a)}
+            style={{
+              background: a.type === 'good'
+                ? 'linear-gradient(135deg,#1a3a28,#0f2d1a)'
+                : 'linear-gradient(135deg,#3a1a1a,#2d0f0f)',
+              border:`1px solid ${a.type === 'good' ? '#4ade8055' : '#f8717155'}`,
+              borderRadius:8, padding:'5px 10px', cursor:'pointer',
+              animation:'sg-slidein 0.3s ease-out',
+              fontSize:12, fontWeight:600,
+              color: a.type === 'good' ? '#4ade80' : '#f87171',
+            }}
+          >
+            {a.text} {a.type === 'good' ? '+' : ''}{fmtCash(a.reward)}
+          </div>
         ))}
-        {/* skyline bg */}
-        <div style={{ position:'absolute', bottom:0, left:0, right:0, height:120, opacity:0.12 }}>
-          {[0,40,75,110,150,185,220,260,295,330,370,405,440].map((x,i)=>(
-            <div key={i} style={{ position:'absolute', bottom:0, left:x, width:28, height:50+(i%4)*35, background:'#1e1e3e' }} />
-          ))}
-        </div>
+      </div>
 
-        <div style={{ transform:`translateY(${panY}px) scale(${zoom})`, transformOrigin:'top center', transition:dragging?'none':'transform 0.08s', padding:'12px 16px' }}>
-          <div style={{ background:'#0a0a18', border:'2px solid #1e1e3e', borderRadius:10, overflow:'hidden' }}>
-            {/* roof bar */}
-            <div style={{ background:'#1a1a2e', padding:'5px 10px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-              <div style={{ fontSize:11, fontWeight:700, color:'#818cf8' }}>⚡ SILICON GRIND HQ</div>
-              <div style={{ fontSize:9, color:'#22c55e' }}>{fmt(income)}/s</div>
-            </div>
-            <div style={{ padding:'3px 6px 6px' }}>
-              {reversed.map(floor => (
-                <BuildingFloor
-                  key={floor.id}
-                  floor={floor}
-                  unlocked={totalEarned >= floor.unlockAt}
-                  income={floorIncome(floor.id)}
-                  onClick={() => setSelectedFloor(totalEarned>=floor.unlockAt ? floor : null)}
-                  empCount={floorEmpCount(floor.id)}
-                  hasEquipment={hasEquip}
-                />
-              ))}
-            </div>
-            <div style={{ height:6, background:'linear-gradient(90deg,#4f46e5,#7c3aed)', opacity:0.6 }} />
-          </div>
+      {/* ── OFFICE SCENE (main content) ── */}
+      <div style={{ flex:1, position:'relative', overflow:'hidden', minHeight:0 }}>
+        <OfficeScene
+          officeIdx={gs.officeIdx}
+          employees={gs.employees}
+          equipment={gs.equipment}
+          tools={gs.tools}
+          totalEarned={gs.totalEarned}
+          income={effectiveIncome}
+          companyName={gs.companyName}
+          prestigeLevel={gs.prestigeLevel}
+        />
+
+        {/* Side action buttons */}
+        <div style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', display:'flex', flexDirection:'column', gap:8 }}>
+          <IconBtn emoji="👥" label="Team"  onClick={() => setSheet('team')}     unlocked={tabsUnlocked.team} />
+          <IconBtn emoji="🔬" label="R&D"   onClick={() => setSheet('research')} unlocked={tabsUnlocked.research} />
+        </div>
+        <div style={{ position:'absolute', right:8, top:'50%', transform:'translateY(-50%)', display:'flex', flexDirection:'column', gap:8 }}>
+          <IconBtn emoji="🚀" label="Ship"  onClick={() => setSheet('ship')}     unlocked={tabsUnlocked.ship} badge={shipCd > 0 ? fmtTime(shipCd) : undefined} />
+          <IconBtn emoji="⭐" label="More"  onClick={() => setSheet('more')}     unlocked={tabsUnlocked.more} />
         </div>
       </div>
 
-      {selectedFloor && (
-        <div style={{ background:'#1a1a2e', border:`1px solid ${selectedFloor.accent}`, borderRadius:10, padding:12, marginTop:8 }}>
-          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
-            <div style={{ fontSize:15, fontWeight:700 }}>{selectedFloor.icon} {selectedFloor.name}</div>
-            <button onClick={()=>setSelectedFloor(null)} style={{ background:'none', border:'none', color:'#555', fontSize:17, cursor:'pointer' }}>×</button>
+      {/* ── Productivity bar ── */}
+      <div style={{
+        flexShrink:0, padding:'6px 16px 4px',
+        background:'#0d0d1a',
+      }}>
+        <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
+          <span style={{ fontSize:10, color:'#8888aa', minWidth:90 }}>
+            ⚡ PRODUCTIVITY
+          </span>
+          <div style={{ flex:1, height:5, background:'#1c1c35', borderRadius:3, overflow:'hidden' }}>
+            <div style={{
+              height:'100%', width:productivity + '%',
+              background:`linear-gradient(90deg,${prodColor},${prodColor}cc)`,
+              borderRadius:3, transition:'width 0.2s ease',
+            }} />
           </div>
-          <div style={{ fontSize:10, color:'#555', marginBottom:7 }}>{selectedFloor.desc}</div>
-          <div style={{ display:'flex', justifyContent:'space-between', fontSize:11 }}>
-            <span style={{ color:'#888' }}>Staff: <strong style={{ color:'#fff' }}>{floorEmpCount(selectedFloor.id)}</strong></span>
-            <span style={{ color:'#888' }}>Output: <strong style={{ color:'#22c55e' }}>{fmt(floorIncome(selectedFloor.id))}/s</strong></span>
-          </div>
+          <span style={{ fontSize:10, color:prodColor, minWidth:32, textAlign:'right' }}>
+            {Math.round(productivity)}%
+          </span>
         </div>
-      )}
+      </div>
 
-      <div style={{ marginTop:8, display:'grid', gridTemplateColumns:'1fr 1fr', gap:7 }}>
-        <button onClick={ship} disabled={shipCooldown>0} style={{ padding:11, background:shipCooldown>0?'#1e1e3e':'linear-gradient(90deg,#22c55e,#16a34a)', color:shipCooldown>0?'#444':'#fff', border:'none', borderRadius:9, cursor:'pointer', fontWeight:700, fontSize:12, animation:shipCooldown===0?'shipPulse 1.5s ease-in-out infinite':'none' }}>
-          {shipCooldown>0?`🚀 ${shipCooldown}s`:'🚀 Ship Feature!'}
+      {/* ── WORK Button ── */}
+      <div style={{
+        flexShrink:0, display:'flex', justifyContent:'center',
+        padding:'6px 0 12px', background:'#0d0d1a',
+        position:'relative',
+      }}>
+        {/* Pulse rings */}
+        {[1,2,3].map(i => (
+          <div key={i} style={{
+            position:'absolute', top:'50%', left:'50%',
+            transform:'translate(-50%, -50%)',
+            width:80, height:80, borderRadius:'50%',
+            border:`2px solid ${office.accent}44`,
+            animation:`sg-ring 2s ease-out ${i * 0.6}s infinite`,
+            pointerEvents:'none',
+          }} />
+        ))}
+        <button
+          onClick={handleWork}
+          style={{
+            width:80, height:80, borderRadius:'50%',
+            background:`radial-gradient(circle at 35% 35%, ${office.accent}cc, ${office.accent}66)`,
+            border:`3px solid ${office.accent}`,
+            boxShadow:`0 0 20px ${office.accent}55, inset 0 2px 8px rgba(255,255,255,0.15)`,
+            fontSize:14, fontWeight:900, color:'#fff',
+            cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center',
+            flexDirection:'column', gap:1,
+            animation:`sg-pulse 2s ease-in-out infinite`,
+          }}
+        >
+          <span style={{ fontSize:22, lineHeight:1 }}>💻</span>
+          <span style={{ fontSize:10, letterSpacing:'0.05em' }}>WORK</span>
         </button>
-        {officeIdx < OFFICES.length-1
-          ? <button onClick={upgradeOffice} disabled={cash<OFFICES[officeIdx+1].cost} style={{ padding:11, background:cash>=OFFICES[officeIdx+1].cost?'linear-gradient(90deg,#4f46e5,#7c3aed)':'#1e1e3e', color:cash>=OFFICES[officeIdx+1].cost?'#fff':'#444', border:'none', borderRadius:9, cursor:'pointer', fontWeight:700, fontSize:11 }}>
-              🏢 Upgrade HQ<br/><span style={{ fontSize:9, fontWeight:400 }}>({fmt(OFFICES[officeIdx+1].cost)})</span>
-            </button>
-          : <div style={{ padding:11, background:'#0f2818', border:'1px solid #22c55e', borderRadius:9, textAlign:'center', fontSize:11, color:'#22c55e', fontWeight:700 }}>👑 Max Level!</div>
-        }
       </div>
 
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:7, marginTop:7 }}>
-        {[{type:'boost',icon:'⚡',sub:'2x 60s'},{type:'gems',icon:'💎',sub:'+15 💎'},{type:'cash',icon:'💰',sub:'Bonus $'}].map(a=>(
-          <button key={a.type} onClick={()=>watchAd(a.type)} style={{ background:'#1a1a2e', border:'1px solid #2a2a3e', borderRadius:9, padding:'7px 3px', cursor:'pointer', color:'#fff', textAlign:'center' }}>
-            <div style={{ fontSize:17 }}>{a.icon}</div>
-            <div style={{ fontSize:9, color:'#818cf8' }}>Watch Ad</div>
-            <div style={{ fontSize:9, color:'#555' }}>{a.sub}</div>
+      {/* ── Bottom Tab Bar ── */}
+      <div style={{
+        flexShrink:0, display:'flex',
+        background:'#0d0d1a',
+        borderTop:'1px solid rgba(255,255,255,0.06)',
+        paddingBottom:'env(safe-area-inset-bottom)',
+      }}>
+        {[
+          { id:'team',     emoji:'👥', label:'Team',     unlocked: tabsUnlocked.team },
+          { id:'research', emoji:'🔬', label:'R&D',      unlocked: tabsUnlocked.research },
+          { id:'ship',     emoji:'🚀', label:'Ship',     unlocked: tabsUnlocked.ship },
+          { id:'more',     emoji:'⭐', label:'More',     unlocked: tabsUnlocked.more },
+        ].map(t => (
+          <button
+            key={t.id}
+            onClick={() => t.unlocked ? setSheet(sheet === t.id ? null : t.id) : undefined}
+            style={{
+              flex:1, padding:'8px 0', background:'none', border:'none',
+              display:'flex', flexDirection:'column', alignItems:'center', gap:2,
+              opacity: t.unlocked ? 1 : 0.3,
+              cursor: t.unlocked ? 'pointer' : 'not-allowed',
+            }}
+          >
+            <span style={{ fontSize:18 }}>{t.emoji}</span>
+            <span style={{ fontSize:10, color: sheet === t.id ? '#4ade80' : '#8888aa', fontWeight:600 }}>{t.label}</span>
+            {sheet === t.id && (
+              <div style={{ width:4, height:4, borderRadius:'50%', background:'#4ade80', marginTop:1 }} />
+            )}
           </button>
         ))}
       </div>
 
-      <div style={{ fontSize:11, color:'#666', margin:'11px 0 7px' }}>MILESTONES</div>
-      {milestones.map(ms => {
-        const def = MILESTONES.find(m=>m.id===ms.id)!
-        return (
-          <div key={ms.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', background:ms.done?'#0f2818':'#1a1a2e', border:`1px solid ${ms.done?'#22c55e':'#2a2a2a'}`, borderRadius:9, padding:'8px 11px', marginBottom:5 }}>
-            <div style={{ fontSize:11 }}>{ms.done?'✅':'🎯'} {def.label}</div>
-            {ms.done&&!ms.claimed
-              ? <button onClick={()=>claimMilestone(ms.id)} style={{ background:'#22c55e', color:'#fff', border:'none', borderRadius:5, padding:'3px 8px', cursor:'pointer', fontSize:10, fontWeight:700 }}>Claim {def.reward}</button>
-              : <div style={{ fontSize:10, color:ms.claimed?'#22c55e':'#555' }}>{ms.claimed?'✓':def.reward}</div>
-            }
+      {/* ── BOTTOM SHEETS ── */}
+      {sheet && (
+        <div
+          style={{
+            position:'fixed', inset:0, zIndex:300,
+            background:'rgba(0,0,0,0.6)',
+          }}
+          onClick={() => setSheet(null)}
+        >
+          <div
+            style={{
+              position:'absolute', bottom:0, left:0, right:0,
+              background:'#151528',
+              borderRadius:'20px 20px 0 0',
+              border:'1px solid rgba(255,255,255,0.08)',
+              maxHeight:'78dvh',
+              display:'flex', flexDirection:'column',
+              animation:'sg-banner-in 0.3s ease-out',
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Sheet header */}
+            <div style={{
+              flexShrink:0, display:'flex', alignItems:'center', justifyContent:'space-between',
+              padding:'14px 16px 10px',
+              borderBottom:'1px solid rgba(255,255,255,0.06)',
+            }}>
+              <div style={{ fontWeight:800, fontSize:16 }}>
+                {sheet === 'team' && '👥 Team'}
+                {sheet === 'research' && '🔬 R&D'}
+                {sheet === 'ship' && '🚀 Ship'}
+                {sheet === 'more' && '⭐ More'}
+              </div>
+              <button
+                onClick={() => setSheet(null)}
+                style={{ background:'none', border:'none', color:'#8888aa', fontSize:22, cursor:'pointer', lineHeight:1 }}
+              >×</button>
+            </div>
+
+            {/* Sheet content */}
+            <div id="sg-scroll" style={{ flex:1, overflowY:'auto', padding:'12px 0' }} className="hide-scroll">
+              {sheet === 'team'     && <TeamSheet gs={gs} onHire={handleHire} onBuyOffice={handleBuyOffice} onBuyTool={handleBuyTool} onBuyEquip={handleBuyEquip} teamTab={teamTab} setTeamTab={setTeamTab} income={income} />}
+              {sheet === 'research' && <ResearchSheet gs={gs} onResearch={handleResearch} resTab={resTab} setResTab={setResTab} />}
+              {sheet === 'ship'     && <ShipSheet gs={gs} shipCd={shipCd} evDef={evDef} onShip={handleShip} onClaimEvent={handleClaimEvent} onWatchAd={handleWatchAd} effectiveIncome={effectiveIncome} />}
+              {sheet === 'more'     && <MoreSheet gs={gs} onSpin={handleSpin} spinResult={spinResult} spinAnimIdx={spinAnimIdx} setSpinResult={setSpinResult} onClaimMission={handleClaimMission} onClaimStreak={handleClaimStreak} onStartInvestor={handleStartInvestor} investorActive={investorActive} investorTaps={investorTaps} investorTimer={investorTimer} investorDone={investorDone} onInvestorTap={handleInvestorTap} onInvestorEnd={handleInvestorEnd} onWatchAd={handleWatchAd} showIPO={showIPO} onIPO={handleIPO} onToggleSfx={() => setGs(prev => ({ ...prev, sfxEnabled: !prev.sfxEnabled }))} />}
+            </div>
           </div>
-        )
-      })}
+        </div>
+      )}
+
+      {/* ── OFFLINE MODAL ── */}
+      {showOfflineModal && (
+        <div style={{
+          position:'fixed', inset:0, zIndex:500,
+          background:'rgba(0,0,0,0.8)', display:'flex', alignItems:'center', justifyContent:'center',
+        }}>
+          <div style={{
+            background:'#1c1c35', borderRadius:20,
+            border:'1px solid rgba(255,255,255,0.1)',
+            padding:28, maxWidth:300, width:'90%',
+            animation:'sg-pop 0.4s ease-out',
+            textAlign:'center',
+          }}>
+            <div style={{ fontSize:48, marginBottom:12 }}>💤</div>
+            <div style={{ fontWeight:800, fontSize:18, marginBottom:8 }}>Welcome Back!</div>
+            <div style={{ color:'#8888aa', marginBottom:16, fontSize:14 }}>
+              While you were away, your team kept grinding...
+            </div>
+            <div style={{ fontWeight:900, fontSize:28, color:'#4ade80', marginBottom:20 }}>
+              +{fmtCash(offlineEarned)}
+            </div>
+            <div style={{ display:'flex', gap:10, justifyContent:'center' }}>
+              <GBtn label="Claim" color="#4ade80" onClick={() => handleClaimOffline(false)} />
+              <GBtn
+                label={`2× Claim (20 💎)`}
+                color="#a78bfa"
+                onClick={() => handleClaimOffline(true)}
+                disabled={gs.gems < 20}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── IPO MODAL ── */}
+      {showIPO && (
+        <div style={{
+          position:'fixed', inset:0, zIndex:500,
+          background:'rgba(0,0,0,0.85)', display:'flex', alignItems:'center', justifyContent:'center',
+        }}>
+          <div style={{
+            background:'linear-gradient(135deg,#1a1535,#0d0a2a)',
+            borderRadius:20,
+            border:'1px solid #a78bfa55',
+            padding:28, maxWidth:300, width:'90%',
+            animation:'sg-pop 0.4s ease-out',
+            textAlign:'center',
+          }}>
+            <div style={{ fontSize:52, marginBottom:12 }}>🎉</div>
+            <div style={{ fontWeight:900, fontSize:22, color:'#a78bfa', marginBottom:8 }}>IPO READY!</div>
+            <div style={{ color:'#8888aa', marginBottom:8, fontSize:14 }}>
+              {gs.companyName} has reached a <strong style={{ color:'#f0f0ff' }}>$1B valuation!</strong>
+            </div>
+            <div style={{ color:'#8888aa', marginBottom:20, fontSize:13 }}>
+              Going public resets your progress but permanently boosts income by ×{gs.prestigeLevel + 2}. Your gems carry over.
+            </div>
+            <div style={{ display:'flex', gap:10, justifyContent:'center' }}>
+              <button
+                onClick={() => setShowIPO(false)}
+                style={{
+                  background:'none', border:'1px solid #8888aa55',
+                  color:'#8888aa', borderRadius:10, padding:'10px 18px',
+                  fontWeight:700, cursor:'pointer',
+                }}
+              >Not Yet</button>
+              <GBtn label="🚀 Go Public!" color="#a78bfa" onClick={handleIPO} />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
-export default function SiliconGrind() {
-  const [cash, setCash]                     = useState(500)
-  const [gems, setGems]                     = useState(20)
-  const [tab, setTab]                       = useState('hq')
-  const [officeIdx, setOfficeIdx]           = useState(0)
-  const [employees, setEmployees]           = useState<Record<string,number>>({})
-  const [tools, setTools]                   = useState<Record<string,boolean>>({})
-  const [equipment, setEquipment]           = useState<Record<string,boolean>>({})
-  const [boost, setBoost]                   = useState(false)
-  const [boostTimer, setBoostTimer]         = useState(0)
-  const [shipCooldown, setShipCooldown]     = useState(0)
-  const [spinning, setSpinning]             = useState(false)
-  const [spinResult, setSpinResult]         = useState<string|null>(null)
-  const [spinAngle, setSpinAngle]           = useState(0)
-  const [spunToday, setSpunToday]           = useState(false)
-  const [milestones, setMilestones]         = useState<MilestoneState[]>(MILESTONES.map(m=>({id:m.id,done:false,claimed:false})))
-  const [floats, setFloats]                 = useState<FloatItem[]>([])
-  const [flashSale, setFlashSale]           = useState(false)
-  const [flashTimer, setFlashTimer]         = useState(0)
-  const [event, setEvent]                   = useState<EventState|null>(null)
-  const [totalEarned, setTotalEarned]       = useState(500)
-  const [companyValue, setCompanyValue]     = useState(500)
-  const [adWatching, setAdWatching]         = useState<string|null>(null)
-  const [showWelcome, setShowWelcome]       = useState(false)
-  const [welcomeTimer, setWelcomeTimer]     = useState(30)
-  const [welcomeClaimed, setWelcomeClaimed] = useState(false)
-  const [showOffline, setShowOffline]       = useState(false)
-  const [offlineEarned, setOfflineEarned]   = useState(0)
-  const [loginStreak, setLoginStreak]       = useState(1)
-  const [liveEvent, setLiveEvent]           = useState<LiveEventState>({id:'e1',progress:0,claimed:false})
-  const [liveEventTimer, setLiveEventTimer] = useState(48*3600)
-  const [totalShips, setTotalShips]         = useState(0)
-  const [totalHires, setTotalHires]         = useState(0)
-  const [unlockedTabs, setUnlockedTabs]     = useState<string[]>(['hq','settings'])
-  const [newTabBadge, setNewTabBadge]       = useState<string|null>(null)
-  const [milestonePopup, setMilestonePopup] = useState<string|null>(null)
-  const lastTickRef       = useRef<number>(Date.now())
-  const companyValueRef   = useRef(500)
-  const { playing: musicPlaying, toggle: toggleMusic, start: startMusic } = useMusicEngine(officeIdx)
-  const musicStartedRef = useRef(false)
-  const [particles, setParticles] = useState<Particle[]>([])
-  const rAFRef = useRef(0)
-  const [shaking, setShaking]             = useState(false)
-  const [levelUpShow, setLevelUpShow]     = useState(false)
-  const [newOfficeName, setNewOfficeName] = useState('')
-  const [confetti, setConfetti]           = useState<ConfettiPiece[]>([])
-  const displayCashRef                            = useRef(500)
-  const [displayCash, setDisplayCash]             = useState(500)
-  const [sfxEnabled, setSfxEnabled]               = useState(true)
-  const [companyName, setCompanyName]             = useState('Your Company')
-  const [companyNameInput, setCompanyNameInput]   = useState('Your Company')
-  const [daysPlayed, setDaysPlayed]               = useState(1)
-  const [showResetConfirm, setShowResetConfirm]   = useState(false)
-  const sfxCtxRef = useRef<AudioContext|null>(null)
-  const [prestigeLevel, setPrestigeLevel] = useState(0)
-  const [ipoShow, setIpoShow]             = useState(false)
-  const [missionDate, setMissionDate]         = useState('')
-  const [dailyMissions, setDailyMissions]     = useState<DailyMission[]>([])
-  const [dailyShips, setDailyShips]           = useState(0)
-  const [dailyHires, setDailyHires]           = useState(0)
-  const [dailyEarned, setDailyEarned]         = useState(0)
-  const [dailyClicks, setDailyClicks]         = useState(0)
-  const [dailySpent, setDailySpent]           = useState(0)
-  const [lastLoginDate, setLastLoginDate]     = useState('')
-  const [streakClaimed, setStreakClaimed]     = useState(false)
-  const [showStreakModal, setShowStreakModal] = useState(false)
+// ─────────────────────────────────────────────────────────────
+//  UI PRIMITIVES
+// ─────────────────────────────────────────────────────────────
 
-  useEffect(()=>{
-    const s=loadSave()
-    if (s) {
-      if (typeof s.cash==='number')          setCash(s.cash)
-      if (typeof s.gems==='number')          setGems(s.gems)
-      if (typeof s.officeIdx==='number')     setOfficeIdx(s.officeIdx)
-      if (s.employees)                       setEmployees(s.employees as Record<string,number>)
-      if (s.tools)                           setTools(s.tools as Record<string,boolean>)
-      if (s.equipment)                       setEquipment(s.equipment as Record<string,boolean>)
-      if (s.spunDate===new Date().toDateString()) setSpunToday(true)
-      if (s.milestones)                      setMilestones(s.milestones as MilestoneState[])
-      if (typeof s.totalEarned==='number')   setTotalEarned(s.totalEarned)
-      if (typeof s.companyValue==='number')  setCompanyValue(s.companyValue)
-      if (s.welcomeClaimed)                  { setWelcomeClaimed(true); setShowWelcome(false) }
-      if (s.liveEvent)                       setLiveEvent(s.liveEvent as LiveEventState)
-      if (typeof s.liveEventTimer==='number') setLiveEventTimer(s.liveEventTimer)
-      if (typeof s.totalShips==='number')    setTotalShips(s.totalShips)
-      if (typeof s.totalHires==='number')    setTotalHires(s.totalHires)
-      if (typeof s.missionDate==='string')   setMissionDate(s.missionDate)
-      if (Array.isArray(s.dailyMissions))    setDailyMissions(s.dailyMissions as DailyMission[])
-      if (typeof s.dailyShips==='number')    setDailyShips(s.dailyShips)
-      if (typeof s.dailyHires==='number')    setDailyHires(s.dailyHires)
-      if (typeof s.dailyEarned==='number')   setDailyEarned(s.dailyEarned)
-      if (typeof s.dailyClicks==='number')   setDailyClicks(s.dailyClicks)
-      if (typeof s.dailySpent==='number')    setDailySpent(s.dailySpent)
-      if (typeof s.sfxEnabled==='boolean')    setSfxEnabled(s.sfxEnabled)
-      if (typeof s.companyName==='string')    { setCompanyName(s.companyName); setCompanyNameInput(s.companyName) }
-      if (typeof s.prestigeLevel==='number')  setPrestigeLevel(s.prestigeLevel)
-      const loadedLastLogin = typeof s.lastLoginDate==='string' ? s.lastLoginDate : ''
-      const loadedStreak    = typeof s.loginStreak==='number'   ? s.loginStreak   : 1
-      const loadedDays      = typeof s.daysPlayed==='number'    ? s.daysPlayed    : 1
-      const today           = new Date().toDateString()
-      if (loadedLastLogin !== today) {
-        const yesterday = new Date(Date.now()-86400000).toDateString()
-        const newStreak = loadedLastLogin===yesterday ? loadedStreak+1 : 1
-        setLoginStreak(newStreak); setLastLoginDate(today); setStreakClaimed(false); setShowStreakModal(true)
-        setDaysPlayed(loadedDays+1)
-      } else {
-        setLoginStreak(loadedStreak); setLastLoginDate(loadedLastLogin)
-        if (typeof s.streakClaimed==='boolean') setStreakClaimed(s.streakClaimed)
-        setDaysPlayed(loadedDays)
-      }
-    } else {
-      setShowWelcome(true)
-      setLoginStreak(1); setLastLoginDate(new Date().toDateString()); setStreakClaimed(false)
-      setDaysPlayed(1)
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[])
+function StatChip({ label, value, accent }: { label:string; value:string; accent:string }) {
+  return (
+    <div style={{
+      flex:1, background:'#151528', border:`1px solid ${accent}33`,
+      borderRadius:8, padding:'4px 8px', minWidth:0,
+    }}>
+      <div style={{ fontSize:9, color:'#8888aa', marginBottom:1 }}>{label}</div>
+      <div style={{ fontSize:13, fontWeight:800, color:accent, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+        {value}
+      </div>
+    </div>
+  )
+}
 
-  useEffect(()=>{
-    try {
-      localStorage.setItem(SAVE_KEY, JSON.stringify({
-        cash, gems, officeIdx, employees, tools, equipment,
-        spunDate: spunToday ? new Date().toDateString() : null,
-        milestones, totalEarned, companyValue, welcomeClaimed,
-        liveEvent, liveEventTimer, totalShips, totalHires,
-        missionDate, dailyMissions, dailyShips, dailyHires, dailyEarned, dailyClicks, dailySpent,
-        loginStreak, lastLoginDate, streakClaimed,
-        sfxEnabled, companyName, daysPlayed, prestigeLevel,
-      }))
-    } catch(_) {}
-  },[cash,gems,officeIdx,employees,tools,equipment,spunToday,milestones,
-     totalEarned,companyValue,welcomeClaimed,liveEvent,liveEventTimer,totalShips,totalHires,
-     missionDate,dailyMissions,dailyShips,dailyHires,dailyEarned,dailyClicks,dailySpent,
-     loginStreak,lastLoginDate,streakClaimed,
-     sfxEnabled,companyName,daysPlayed,prestigeLevel])
+function IconBtn({ emoji, label, onClick, unlocked, badge }: {
+  emoji:string; label:string; onClick:()=>void; unlocked:boolean; badge?:string
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        background:'rgba(13,13,26,0.9)', border:'1px solid rgba(255,255,255,0.1)',
+        borderRadius:12, padding:'8px 6px',
+        width:50, display:'flex', flexDirection:'column', alignItems:'center', gap:2,
+        opacity: unlocked ? 1 : 0.3,
+        cursor: unlocked ? 'pointer' : 'not-allowed',
+        position:'relative', backdropFilter:'blur(4px)',
+      }}
+    >
+      <span style={{ fontSize:20 }}>{emoji}</span>
+      <span style={{ fontSize:9, color:'#8888aa', fontWeight:600 }}>{label}</span>
+      {badge && (
+        <div style={{
+          position:'absolute', top:-4, right:-4,
+          background:'#f87171', borderRadius:8, padding:'1px 4px',
+          fontSize:8, fontWeight:800, color:'#fff',
+        }}>{badge}</div>
+      )}
+    </button>
+  )
+}
 
-  useEffect(()=>{
-    try {
-      const saved=localStorage.getItem('sg_last_seen')
-      if(saved){const diff=Math.min((Date.now()-parseInt(saved))/1000,OFFLINE_CAP);if(diff>60){setOfflineEarned(Math.floor(diff*0.5));setShowOffline(true)}}
-      localStorage.setItem('sg_last_seen',Date.now().toString())
-      if(localStorage.getItem('sg_visited'))setShowWelcome(false)
-    }catch(_){}
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[])
+function GBtn({ label, color, onClick, disabled, small }: {
+  label:string; color:string; onClick:()=>void; disabled?:boolean; small?:boolean
+}) {
+  return (
+    <button
+      onClick={!disabled ? onClick : undefined}
+      style={{
+        background: disabled ? '#2a2a3a' : `linear-gradient(135deg,${color}99,${color}55)`,
+        border:`1px solid ${disabled ? '#333' : color + '66'}`,
+        borderRadius:10, padding: small ? '7px 12px' : '10px 18px',
+        color: disabled ? '#555' : color,
+        fontWeight:800, fontSize: small ? 11 : 13, cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.5 : 1,
+        whiteSpace:'nowrap',
+      }}
+    >
+      {label}
+    </button>
+  )
+}
 
-  useEffect(()=>{
-    const tabs=['hq']
-    if(totalEarned>=200)tabs.push('team')
-    if(totalEarned>=1000)tabs.push('grow')
-    if(totalEarned>=5000)tabs.push('ship')
-    if(totalEarned>=10000)tabs.push('meta')
-    tabs.push('settings')
-    setUnlockedTabs(prev=>{const added=tabs.filter(t=>!prev.includes(t));if(added.length>0)setNewTabBadge(added[added.length-1]);return tabs})
-  },[totalEarned])
+function SheetRow({ left, right, sub, onClick, owned }: {
+  left:React.ReactNode; right:React.ReactNode; sub?:string; onClick?:()=>void; owned?:boolean
+}) {
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        display:'flex', alignItems:'center', justifyContent:'space-between',
+        padding:'10px 16px',
+        borderBottom:'1px solid rgba(255,255,255,0.04)',
+        cursor: onClick ? 'pointer' : 'default',
+        background: owned ? 'rgba(74,222,128,0.04)' : 'transparent',
+        transition:'background 0.15s',
+      }}
+    >
+      <div>
+        <div style={{ fontWeight:700, fontSize:14 }}>{left}</div>
+        {sub && <div style={{ fontSize:11, color:'#8888aa', marginTop:2 }}>{sub}</div>}
+      </div>
+      <div style={{ flexShrink:0, marginLeft:12 }}>{right}</div>
+    </div>
+  )
+}
 
-  useEffect(()=>{if(!newTabBadge)return;const t=setTimeout(()=>setNewTabBadge(null),4000);return()=>clearTimeout(t)},[newTabBadge])
+// ─────────────────────────────────────────────────────────────
+//  OFFICE SCENES
+// ─────────────────────────────────────────────────────────────
 
-  const getIncome=useCallback(():number=>{
-    let base=0
-    Object.entries(employees).forEach(([id,count])=>{const emp=EMPLOYEES.find(e=>e.id===id);if(emp)base+=emp.income*count})
-    let mult=OFFICES[officeIdx].multiplier
-    Object.entries(tools).forEach(([id,owned])=>{if(owned){const t=TOOLS.find(t=>t.id===id);if(t)mult*=t.multiplier}})
-    Object.entries(equipment).forEach(([id,owned])=>{if(owned){const e=EQUIPMENT.find(e=>e.id===id);if(e)mult*=e.multiplier}})
-    if(boost)mult*=2
-    return base*mult*(prestigeLevel+1)
-  },[employees,officeIdx,tools,equipment,boost,prestigeLevel])
+interface SceneProps {
+  officeIdx: number
+  employees: EmpCounts
+  equipment: Owned
+  tools: Owned
+  totalEarned: number
+  income: number
+  companyName: string
+  prestigeLevel: number
+}
 
-  const totalEmps=Object.values(employees).reduce((a,b)=>a+b,0)
+function OfficeScene(props: SceneProps) {
+  const { officeIdx } = props
+  if (officeIdx === 0) return <GarageScene {...props} />
+  if (officeIdx === 1) return <SmallOfficeScene {...props} />
+  if (officeIdx === 2) return <OpenPlanScene {...props} />
+  return <SkyscraperScene {...props} />
+}
 
-  useEffect(()=>{
-    const interval=setInterval(()=>{
-      const now=Date.now(),delta=(now-lastTickRef.current)/1000
-      lastTickRef.current=now
-      const inc=getIncome()*delta
-      if(inc>0){setCash(c=>c+inc);setTotalEarned(t=>t+inc);setCompanyValue(v=>v+inc*0.5);setDailyEarned(e=>e+inc)}
-      setBoostTimer(t=>Math.max(0,t-1));setShipCooldown(t=>Math.max(0,t-1))
-      setFlashTimer(t=>{if(t<=1){setFlashSale(false);return 0}return t-1})
-      setLiveEventTimer(t=>Math.max(0,t-1));setWelcomeTimer(t=>Math.max(0,t-1))
-    },1000)
-    return()=>clearInterval(interval)
-  },[getIncome])
-
-  useEffect(()=>{if(boostTimer===0)setBoost(false)},[boostTimer])
-  useEffect(()=>{companyValueRef.current=companyValue},[companyValue])
-
-  useEffect(()=>{
-    const iv=setInterval(()=>{
-      if(Math.random()<0.04&&!event){
-        const raw=RANDOM_EVENTS[Math.floor(Math.random()*RANDOM_EVENTS.length)]
-        const val=Math.max(raw.base,Math.floor(companyValueRef.current*raw.pct))
-        setEvent({msg:raw.msgFn(val),type:raw.type,val})
-      }
-      if(Math.random()<0.015&&!flashSale){setFlashSale(true);setFlashTimer(120)}
-    },5000)
-    return()=>clearInterval(iv)
-  },[event,flashSale])
-
-  useEffect(()=>{
-    setMilestones(prev=>prev.map(ms=>{
-      if(ms.done)return ms
-      const def=MILESTONES.find(m=>m.id===ms.id)!
-      const met=(def.type==='earned'&&totalEarned>=def.goal)||(def.type==='emp'&&totalEmps>=def.goal)
-      if(met){setMilestonePopup(def.label);setTimeout(()=>setMilestonePopup(null),3000)}
-      return met?{...ms,done:true}:ms
-    }))
-  },[totalEarned,totalEmps])
-
-  useEffect(()=>{
-    setLiveEvent(prev=>{
-      if(prev.claimed)return prev
-      const def=LIVE_EVENTS.find(e=>e.id===prev.id)!
-      const progress=def.goalType==='ships'?totalShips:def.goalType==='hires'?totalHires:totalEarned
-      return{...prev,progress}
-    })
-  },[totalShips,totalHires,totalEarned])
-
-  useEffect(()=>{
-    if(particles.length===0)return
-    rAFRef.current=requestAnimationFrame(()=>{
-      setParticles(prev=>prev
-        .map(p=>({...p,x:p.x+p.vx,y:p.y+p.vy,vy:p.vy+0.38,life:p.life-0.033}))
-        .filter(p=>p.life>0)
-      )
-    })
-    return()=>cancelAnimationFrame(rAFRef.current)
-  },[particles])
-
-  const spawnBurst=(rect:DOMRect)=>{
-    const cx=rect.left+rect.width/2, cy=rect.top+rect.height/2
-    const SYMS=['💰','$','💵','🪙','💲','$','$','💸']
-    setParticles(prev=>[...prev,...Array.from({length:16},(_,i)=>{
-      const angle=(i/16)*Math.PI*2-Math.PI/2+(Math.random()-0.5)*0.9
-      const speed=3.5+Math.random()*6
-      return{id:Date.now()+i,x:cx,y:cy,vx:Math.cos(angle)*speed,vy:Math.sin(angle)*speed-1,life:1,sym:SYMS[Math.floor(Math.random()*SYMS.length)]}
-    })])
-  }
-
-  useEffect(()=>{
-    displayCashRef.current=cash
-    const iv=setInterval(()=>{
-      setDisplayCash(c=>{
-        const diff=displayCashRef.current-c
-        return Math.abs(diff)<0.5?displayCashRef.current:c+diff*0.18
-      })
-    },33)
-    return()=>clearInterval(iv)
-  },[cash])
-
-  useEffect(()=>{
-    const today=new Date().toDateString()
-    if(missionDate!==today){
-      const picked=pickDailyMissions(today)
-      setDailyMissions(picked.map(m=>({...m,progress:0,claimed:false})))
-      setMissionDate(today)
-      setDailyShips(0);setDailyHires(0);setDailyEarned(0);setDailyClicks(0);setDailySpent(0)
-    }
-  },[missionDate])
-
-  useEffect(()=>{
-    setDailyMissions(prev=>prev.map(m=>{
-      if(m.claimed)return m
-      const vals:Record<string,number>={ships:dailyShips,earned:dailyEarned,hires:dailyHires,clicks:dailyClicks,spend:dailySpent}
-      return{...m,progress:Math.min(vals[m.type]??0,m.goal)}
-    }))
-  },[dailyShips,dailyEarned,dailyHires,dailyClicks,dailySpent])
-
-  const addFloat=(val:string)=>{
-    const id=Date.now()+Math.random()
-    setFloats(f=>[...f,{id,x:60+Math.random()*260,y:100+Math.random()*50,val}])
-    setTimeout(()=>setFloats(f=>f.filter(fl=>fl.id!==id)),1500)
-  }
-
-  const work=(e:React.MouseEvent<HTMLButtonElement>)=>{
-    if(!musicStartedRef.current){startMusic();musicStartedRef.current=true}
-    const bonus=10+Math.floor(totalEmps*2);setCash(c=>c+bonus);setTotalEarned(t=>t+bonus);addFloat(`+${fmt(bonus)}`)
-    spawnBurst(e.currentTarget.getBoundingClientRect())
-    setDailyClicks(c=>c+1)
-    playSfx('coin')
-  }
-
-  const ship=()=>{
-    if(shipCooldown>0)return
-    const bonus=Math.max(500,getIncome()*30)
-    setCash(c=>c+bonus);setTotalEarned(t=>t+bonus)
-    setShipCooldown(30);setTotalShips(s=>s+1);addFloat(`🚀 +${fmt(bonus)}`)
-    setShaking(true);setTimeout(()=>setShaking(false),600)
-    setDailyShips(s=>s+1)
-  }
-
-  const buyEmployee=(emp:typeof EMPLOYEES[0])=>{
-    const count=employees[emp.id]||0,cost=empCost(emp.cost,count)
-    if(cash<cost)return
-    setCash(c=>c-cost);setEmployees(e=>({...e,[emp.id]:count+1}));setTotalHires(h=>h+1);addFloat(`+${emp.emoji}`)
-    setDailyHires(h=>h+1)
-  }
-
-  const buyTool=(tool:typeof TOOLS[0])=>{
-    if(tools[tool.id]||cash<tool.cost)return
-    setCash(c=>c-tool.cost);setTools(t=>({...t,[tool.id]:true}));addFloat(`+${tool.emoji}`)
-    setDailySpent(s=>s+tool.cost)
-  }
-
-  const buyEquipment=(eq:typeof EQUIPMENT[0])=>{
-    if(equipment[eq.id]||cash<eq.cost)return
-    setCash(c=>c-eq.cost);setEquipment(e=>({...e,[eq.id]:true}));addFloat(`+${eq.emoji}`)
-    setDailySpent(s=>s+eq.cost)
-  }
-
-  const upgradeOffice=()=>{
-    if(officeIdx>=OFFICES.length-1)return
-    const next=OFFICES[officeIdx+1]
-    if(cash<next.cost)return
-    setCash(c=>c-next.cost);setOfficeIdx(i=>i+1);addFloat(`🏢 ${next.name}!`)
-    setNewOfficeName(next.name)
-    const cols=['#f59e0b','#4f46e5','#22c55e','#ec4899','#06b6d4','#a78bfa','#ff6b6b','#fff']
-    setConfetti(Array.from({length:70},(_,i)=>({id:i,x:Math.random()*100,color:cols[i%cols.length],w:Math.round(6+Math.random()*10),h:Math.round(4+Math.random()*6),dur:+(1.5+Math.random()*1.5).toFixed(2),delay:+(Math.random()*1.2).toFixed(2)})))
-    setLevelUpShow(true)
-    setTimeout(()=>{setLevelUpShow(false);setConfetti([])},3800)
-    setDailySpent(s=>s+next.cost)
-  }
-
-  const claimDailyMission=(id:string)=>{
-    const m=dailyMissions.find(m=>m.id===id)
-    if(!m||m.claimed||m.progress<m.goal)return
-    setDailyMissions(prev=>prev.map(dm=>dm.id===id?{...dm,claimed:true}:dm))
-    const cashAmt=m.rewardType==='cash'?Math.max(m.rewardVal,Math.floor(companyValue*(m.rewardPct||0))):0
-    if(m.rewardType==='gems'){setGems(g=>g+m.rewardVal);addFloat(`+${m.rewardVal} 💎`)}
-    if(m.rewardType==='cash'){setCash(c=>c+cashAmt);setTotalEarned(t=>t+cashAmt);addFloat(`+${fmt(cashAmt)}`)}
-    playSfx('claim')
-  }
-
-  const claimStreakReward=()=>{
-    const day=((loginStreak-1)%7)+1
-    const r=STREAK_REWARDS[day-1]
-    const cashAmt=r.cash>0?Math.max(r.cash,Math.floor(companyValue*r.cashPct)):0
-    if(r.gems>0){setGems(g=>g+r.gems);addFloat(`+${r.gems} 💎`)}
-    if(r.cash>0){setCash(c=>c+cashAmt);setTotalEarned(t=>t+cashAmt);addFloat(`+${fmt(cashAmt)}`)}
-    setStreakClaimed(true);setShowStreakModal(false)
-    playSfx('claim')
-  }
-
-  const claimMilestone=(id:string)=>{
-    const def=MILESTONES.find(m=>m.id===id)!
-    setMilestones(prev=>prev.map(ms=>ms.id===id?{...ms,claimed:true}:ms))
-    if(def.rewardType==='gems'){setGems(g=>g+def.rewardVal);addFloat(`+${def.rewardVal} 💎`)}
-    if(def.rewardType==='cash'){setCash(c=>c+def.rewardVal);addFloat(`+${fmt(def.rewardVal)}`)}
-    playSfx('claim')
-  }
-
-  const claimLiveEvent=()=>{
-    const def=LIVE_EVENTS.find(e=>e.id===liveEvent.id)!
-    if(liveEvent.progress<def.goal||liveEvent.claimed)return
-    setLiveEvent(prev=>({...prev,claimed:true}))
-    if(def.rewardType==='gems'){setGems(g=>g+def.reward);addFloat(`+${def.reward} 💎`)}
-    if(def.rewardType==='cash'){setCash(c=>c+def.reward);addFloat(`+${fmt(def.reward)}`)}
-  }
-
-  const watchAd=(type:string)=>{
-    setAdWatching(type)
-    setTimeout(()=>{
-      setAdWatching(null)
-      if(type==='boost'){setBoost(true);setBoostTimer(60);addFloat('⚡ 2x 60s!')}
-      if(type==='gems'){setGems(g=>g+15);addFloat('+15 💎')}
-      if(type==='cash'){const b=Math.max(1000,getIncome()*60,companyValue*0.01);setCash(c=>c+b);addFloat(`💰 +${fmt(b)}`)}
-      if(type==='spin'){setSpunToday(false);addFloat('🎰 Free Spin!')}
-    },2000)
-  }
-
-  const doSpin=()=>{
-    if(spinning||spunToday)return
-    setSpinning(true);setSpinResult(null)
-    const idx=Math.floor(Math.random()*SPIN_REWARDS.length)
-    setSpinAngle(a=>a+360*5+(idx/SPIN_REWARDS.length)*360)
-    setTimeout(()=>{
-      const r=SPIN_REWARDS[idx]
-      const spinCashVal=r.type==='cash'?Math.max(r.base,Math.floor(companyValue*r.pct)):r.value
-      const spinDisplay=r.type==='cash'?fmt(spinCashVal):r.label
-      setSpinResult(spinDisplay)
-      if(r.type==='cash'){setCash(c=>c+spinCashVal);addFloat(`🎰 +${fmt(spinCashVal)}`)}
-      if(r.type==='gems'){setGems(g=>g+r.value);addFloat(`🎰 +${r.value} 💎`)}
-      if(r.type==='boost'){setBoost(true);setBoostTimer(r.value);addFloat('🎰 2x Boost!')}
-      setSpinning(false);setSpunToday(true);playSfx('claim')
-    },3000)
-  }
-
-  const handleEvent=(accept:boolean)=>{
-    if(!event)return
-    if(accept){
-      if(event.type==='good'){setCash(c=>c+event.val);setTotalEarned(t=>t+event.val);addFloat(`+${fmt(event.val)}`)}
-      if(event.type==='bad'){setCash(c=>Math.max(0,c-event.val));addFloat(`-${fmt(event.val)}`)}
-    }
-    setEvent(null)
-  }
-
-  const spendGems=(cost:number,action:()=>void)=>{if(gems<cost)return;setGems(g=>g-cost);action()}
-
-  const claimOffline=(doubled=false)=>{
-    const amt=doubled?offlineEarned*2:offlineEarned
-    setCash(c=>c+amt);setTotalEarned(t=>t+amt)
-    if(doubled)setGems(g=>g+20)
-    setShowOffline(false);addFloat(`💤 +${fmt(amt)}`)
-  }
-
-  const claimWelcome=()=>{
-    setGems(g=>g+100);setCash(c=>c+1000);setWelcomeClaimed(true);setShowWelcome(false)
-    try{localStorage.setItem('sg_visited','1')}catch(_){}
-    addFloat('🎁 +100 💎 +$1,000!')
-  }
-
-  const playSfx=(type:'coin'|'claim'|'error')=>{
-    if(!sfxEnabled)return
-    if(!sfxCtxRef.current)sfxCtxRef.current=new AudioContext()
-    const ctx=sfxCtxRef.current
-    if(ctx.state==='suspended')ctx.resume()
-    const g=ctx.createGain();g.connect(ctx.destination)
-    if(type==='coin'){
-      const o=ctx.createOscillator();o.type='sine';o.frequency.value=900
-      o.connect(g);g.gain.setValueAtTime(0.18,ctx.currentTime)
-      g.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.08)
-      o.start();o.stop(ctx.currentTime+0.09)
-    }else if(type==='claim'){
-      [[523.25,0],[659.25,0.09]].forEach(([freq,delay])=>{
-        const o2=ctx.createOscillator(),g2=ctx.createGain()
-        o2.type='sine';o2.frequency.value=freq
-        o2.connect(g2);g2.connect(ctx.destination)
-        g2.gain.setValueAtTime(0.2,ctx.currentTime+delay)
-        g2.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+delay+0.12)
-        o2.start(ctx.currentTime+delay);o2.stop(ctx.currentTime+delay+0.13)
-      })
-    }else{
-      const o=ctx.createOscillator();o.type='square';o.frequency.value=150
-      o.connect(g);g.gain.setValueAtTime(0.12,ctx.currentTime)
-      g.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.1)
-      o.start();o.stop(ctx.currentTime+0.11)
-    }
-  }
-
-  const resetGame=()=>{
-    try{localStorage.removeItem(SAVE_KEY);localStorage.removeItem('sg_last_seen');localStorage.removeItem('sg_visited')}catch(_){}
-    window.location.reload()
-  }
-
-  const doIPO=()=>{
-    playSfx('claim')
-    setPrestigeLevel(p=>p+1)
-    const cols=['#ffd700','#ff6b6b','#4ecdc4','#45b7d1','#96ceb4','#ffeaa7']
-    setConfetti(Array.from({length:150},(_,i)=>({id:i,x:Math.random()*100,color:cols[i%cols.length],w:Math.round(6+Math.random()*10),h:Math.round(4+Math.random()*6),dur:+(2+Math.random()*2).toFixed(2),delay:+(Math.random()*2).toFixed(2)})))
-    setIpoShow(true)
-    setTimeout(()=>setConfetti([]),5000)
-  }
-
-  const dismissIPO=()=>{
-    setIpoShow(false)
-    setCash(0);setOfficeIdx(0);setEmployees({});setTools({});setEquipment({})
-    setSpunToday(false);setMilestones(MILESTONES.map(m=>({id:m.id,done:false,claimed:false})));setTotalEarned(0);setCompanyValue(500)
-    setLiveEvent({id:'e1',progress:0,claimed:false});setLiveEventTimer(48*3600);setTotalShips(0);setTotalHires(0)
-    setMissionDate('');setDailyMissions([]);setDailyShips(0);setDailyHires(0)
-    setDailyEarned(0);setDailyClicks(0);setDailySpent(0)
-    setBoost(false);setBoostTimer(0);setFlashSale(false);setFlashTimer(0)
-    setTab('hq')
-  }
-
-  const income=getIncome()
-  const liveEventDef=LIVE_EVENTS.find(e=>e.id===liveEvent.id)!
-  const liveEventPct=Math.min(100,(liveEvent.progress/liveEventDef.goal)*100)
-  const liveHrs=Math.floor(liveEventTimer/3600),liveMins=Math.floor((liveEventTimer%3600)/60),liveSecs=liveEventTimer%60
-  const allEntries=[...LEADERBOARD_BASE,{name:`${companyName} ⭐`,value:Math.floor(companyValue)}].sort((a,b)=>b.value-a.value).slice(0,8)
-  const cycleDay=((loginStreak-1)%7)+1
-  const _now=new Date(),_mid=new Date(_now);_mid.setHours(24,0,0,0)
-  const mSecsLeft=Math.max(0,Math.floor((_mid.getTime()-_now.getTime())/1000))
-  const mHH=Math.floor(mSecsLeft/3600),mMM=Math.floor((mSecsLeft%3600)/60),mSS=mSecsLeft%60
-  const MISSION_ICONS:Record<string,string>={ships:'🚀',earned:'💰',hires:'👥',clicks:'🖱️',spend:'💸'}
+// ── Garage Scene ──
+function GarageScene({ employees, equipment, companyName }: SceneProps) {
+  const devs = employees['dev'] || 0
+  const hasDesigner = (employees['designer'] || 0) > 0
+  const hasCoffee = true
 
   return (
-    <div style={{background:'#0a0a14',minHeight:'100vh',color:'#fff',fontFamily:'sans-serif',maxWidth:480,margin:'0 auto',position:'relative',overflow:'hidden',animation:shaking?'shake 0.55s ease-in-out':'none'}}>
+    <div style={{
+      width:'100%', height:'100%',
+      background:'linear-gradient(180deg,#1a1210 0%,#0d0a08 100%)',
+      position:'relative', overflow:'hidden',
+    }}>
+      {/* Concrete floor */}
+      <div style={{
+        position:'absolute', bottom:0, left:0, right:0, height:'35%',
+        background:'linear-gradient(180deg,#1a1a1a 0%,#141414 100%)',
+        borderTop:'2px solid #2a2a2a',
+      }}>
+        {/* Oil stain */}
+        <div style={{
+          position:'absolute', bottom:20, left:'40%',
+          width:60, height:20,
+          background:'rgba(0,0,0,0.4)',
+          borderRadius:'50%', filter:'blur(6px)',
+        }} />
+      </div>
 
-      {floats.map(f=>(
-        <div key={f.id} style={{position:'fixed',top:f.y,left:f.x,color:'#22c55e',fontWeight:700,fontSize:13,pointerEvents:'none',zIndex:200,animation:'floatUp 1.5s ease-out forwards',whiteSpace:'nowrap'}}>{f.val}</div>
+      {/* Garage walls */}
+      <div style={{
+        position:'absolute', inset:0,
+        background:'linear-gradient(180deg,#2a2018 0%,transparent 40%)',
+        pointerEvents:'none',
+      }} />
+
+      {/* Flickering overhead light */}
+      <div style={{
+        position:'absolute', top:8, left:'50%', transform:'translateX(-50%)',
+        width:80, height:8, background:'#fff',
+        borderRadius:4,
+        animation:'sg-flicker 4s ease-in-out infinite',
+        boxShadow:'0 0 30px 10px rgba(255,240,180,0.15)',
+      }} />
+      {/* Light cone */}
+      <div style={{
+        position:'absolute', top:16, left:'50%', transform:'translateX(-50%)',
+        width:0, height:0,
+        borderLeft:'100px solid transparent',
+        borderRight:'100px solid transparent',
+        borderTop:'120px solid rgba(255,240,180,0.04)',
+        pointerEvents:'none',
+      }} />
+
+      {/* Whiteboard */}
+      <div style={{
+        position:'absolute', top:30, right:20,
+        width:90, height:70,
+        background:'#e8e8e8', borderRadius:4,
+        border:'3px solid #5a3a1a',
+        padding:6, overflow:'hidden',
+      }}>
+        <div style={{ fontSize:7, color:'#333', lineHeight:1.4, fontFamily:'monospace' }}>
+          <div style={{ color:'#888' }}>MVP PLAN</div>
+          <div>✓ Build it</div>
+          <div>✓ Ship it</div>
+          <div style={{ color:'#4ade80' }}>□ Profit?</div>
+          <div style={{ marginTop:2, color:'#60a5fa', fontSize:6 }}>
+            {companyName}
+          </div>
+        </div>
+      </div>
+
+      {/* Laptop with code */}
+      <div style={{
+        position:'absolute', top:'30%', left:'15%',
+        width:80, height:55,
+      }}>
+        {/* screen */}
+        <div style={{
+          width:80, height:45,
+          background:'#0a0a0a', borderRadius:'4px 4px 0 0',
+          border:'2px solid #333',
+          overflow:'hidden', position:'relative',
+        }}>
+          <div style={{ position:'absolute', top:0, left:0, right:0, bottom:0, overflow:'hidden' }}>
+            <div style={{
+              fontFamily:'monospace', fontSize:5, color:'#4ade80', lineHeight:1.6,
+              animation:'sg-code-scroll 4s linear infinite',
+              padding:3,
+            }}>
+              {`function buildMVP() {
+  const idea = new App()
+  idea.ship()
+  return profit
+}
+git commit -m "fix"
+npm run deploy
+console.log('live!')
+// TODO: sleep
+const users = []
+fetch('/api/v1')
+  .then(r => r.json())
+`}
+              {`function buildMVP() {
+  const idea = new App()
+  idea.ship()
+  return profit
+}`}
+            </div>
+          </div>
+          {/* screen glow */}
+          <div style={{
+            position:'absolute', inset:0,
+            background:'rgba(74,222,128,0.03)',
+            pointerEvents:'none',
+          }} />
+        </div>
+        {/* keyboard */}
+        <div style={{
+          width:80, height:10,
+          background:'#2a2a2a', borderRadius:'0 0 4px 4px',
+          border:'2px solid #333', borderTop:'none',
+        }} />
+      </div>
+
+      {/* Coffee with steam */}
+      <div style={{
+        position:'absolute', bottom:'38%', left:'10%',
+        display:'flex', flexDirection:'column', alignItems:'center',
+      }}>
+        {/* steam */}
+        {[0,1,2].map(i => (
+          <div key={i} style={{
+            width:3, height:12,
+            background:'rgba(200,200,200,0.4)',
+            borderRadius:4,
+            marginBottom:-4,
+            marginLeft: i === 1 ? 8 : i === 2 ? -8 : 0,
+            animation:`sg-steam ${1.5 + i * 0.4}s ease-out ${i * 0.5}s infinite`,
+          }} />
+        ))}
+        <div style={{
+          width:24, height:20, borderRadius:'4px 4px 8px 8px',
+          background:'linear-gradient(180deg,#6b3a2a,#4a2510)',
+          border:'2px solid #7a4a3a',
+          display:'flex', alignItems:'center', justifyContent:'center',
+          fontSize:10,
+        }}>☕</div>
+      </div>
+
+      {/* Pizza boxes */}
+      <div style={{
+        position:'absolute', bottom:'38%', right:'15%',
+        display:'flex', flexDirection:'column', gap:-2,
+      }}>
+        {[0,1,2].map(i => (
+          <div key={i} style={{
+            width:36, height:8,
+            background: i === 0 ? '#8b3a3a' : i === 1 ? '#7a3333' : '#6a2828',
+            border:'1px solid #5a2020', borderRadius:2,
+            marginBottom:-4,
+            transform:`rotate(${(i-1)*2}deg)`,
+          }} />
+        ))}
+      </div>
+
+      {/* Developer figures */}
+      {Array.from({ length: Math.min(devs, 3) }).map((_, i) => (
+        <div key={i} style={{
+          position:'absolute',
+          bottom:'37%',
+          left: `${35 + i * 18}%`,
+          fontSize:22,
+          animation:`sg-breathe ${2 + i * 0.3}s ease-in-out infinite`,
+        }}>
+          🧑‍💻
+        </div>
       ))}
 
-      {particles.map(p=>(
-        <div key={p.id} style={{position:'fixed',left:p.x,top:p.y,transform:'translate(-50%,-50%)',fontSize:Math.round(14+p.life*8),opacity:p.life,pointerEvents:'none',zIndex:250,color:p.sym==='$'||p.sym==='💲'?'#4ade80':'#fbbf24',fontWeight:900,textShadow:`0 0 ${Math.round(p.life*10)}px currentColor`,userSelect:'none'}}>{p.sym}</div>
+      {/* Designer if unlocked */}
+      {hasDesigner && (
+        <div style={{
+          position:'absolute', bottom:'37%', left:'75%',
+          fontSize:22,
+          animation:'sg-breathe 2.4s ease-in-out infinite',
+        }}>🎨</div>
+      )}
+
+      {/* Company name on wall */}
+      <div style={{
+        position:'absolute', top:'15%', left:'50%',
+        transform:'translateX(-50%)',
+        fontSize:12, fontWeight:800, color:'rgba(255,255,255,0.15)',
+        fontFamily:'monospace', letterSpacing:'0.2em', textTransform:'uppercase',
+      }}>
+        {companyName}
+      </div>
+
+      {/* Box labels */}
+      <div style={{
+        position:'absolute', bottom:'37%', left:14,
+        display:'flex', flexDirection:'column', gap:4,
+      }}>
+        {['🗄️','📦','📦'].map((e,i) => (
+          <div key={i} style={{ fontSize:16 }}>{e}</div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ── Small Office Scene ──
+function SmallOfficeScene({ employees, equipment, tools, companyName }: SceneProps) {
+  const devs = employees['dev'] || 0
+  const designers = employees['designer'] || 0
+  const marketers = employees['marketer'] || 0
+  const hasSlack = tools['slack']
+  const hasPlant = (equipment['snackbar'] || equipment['desks'])
+
+  return (
+    <div style={{
+      width:'100%', height:'100%',
+      background:'linear-gradient(180deg,#1a2030 0%,#0d1020 100%)',
+      position:'relative', overflow:'hidden',
+    }}>
+      {/* Floor */}
+      <div style={{
+        position:'absolute', bottom:0, left:0, right:0, height:'35%',
+        background:'linear-gradient(180deg,#1e1e2e 0%,#161626 100%)',
+        borderTop:'2px solid #2a2a40',
+      }} />
+
+      {/* Window */}
+      <div style={{
+        position:'absolute', top:15, left:'50%', transform:'translateX(-50%)',
+        width:120, height:70,
+        background:'linear-gradient(180deg,#1a2a4a,#0d1a30)',
+        border:'4px solid #2a2a40', borderRadius:4,
+        overflow:'hidden',
+      }}>
+        {/* City view */}
+        {[0,1,2,3,4].map(i => (
+          <div key={i} style={{
+            position:'absolute', bottom:0,
+            left: `${i * 22}%`, width:'15%',
+            height: `${30 + i * 8}%`,
+            background:'#1a2a3a',
+            border:'1px solid #2a3a4a',
+          }}>
+            {/* windows on buildings */}
+            {[0,1,2].map(j => (
+              <div key={j} style={{
+                position:'absolute', top: `${10 + j * 28}%`,
+                left:'20%', width:'60%', height:'18%',
+                background: Math.random() > 0.4 ? '#fbbf2444' : '#1a2a3a',
+                borderRadius:1,
+              }} />
+            ))}
+          </div>
+        ))}
+        <div style={{ position:'absolute', inset:0, background:'rgba(96,165,250,0.05)' }} />
+      </div>
+
+      {/* Post-its on wall */}
+      {[
+        { text:'🚀 Ship it!', top:'22%', left:'5%', rot:-3, color:'#fef08a' },
+        { text:'Fix bugs', top:'28%', left:'8%', rot:2, color:'#bbf7d0' },
+        { text:'📊 Analytics', top:'22%', right:'5%', rot:3, color:'#fde68a' },
+      ].map((p, i) => (
+        <div key={i} style={{
+          position:'absolute', top:p.top, left:p.left, right:p.right,
+          background:p.color, borderRadius:2,
+          padding:'3px 5px', fontSize:7, color:'#333',
+          transform:`rotate(${p.rot}deg)`,
+          boxShadow:'1px 2px 4px rgba(0,0,0,0.3)',
+        }}>
+          {p.text}
+        </div>
       ))}
 
-      {levelUpShow&&(
-        <div onClick={()=>{setLevelUpShow(false);setConfetti([])}} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.88)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:500,cursor:'pointer'}}>
-          {confetti.map(c=>(
-            <div key={c.id} style={{position:'fixed',top:'-30px',left:`${c.x}%`,width:c.w,height:c.h,background:c.color,borderRadius:2,animation:`confettiFall ${c.dur}s ${c.delay}s ease-in both`,pointerEvents:'none'}} />
-          ))}
-          <div style={{textAlign:'center',position:'relative',zIndex:501,animation:'levelUpPop 0.5s ease-out forwards'}}>
-            <div style={{fontSize:64,marginBottom:8}}>🏢</div>
-            <div style={{fontSize:28,fontWeight:900,color:'#fff',textShadow:'0 0 30px #7c3aed',marginBottom:6}}>OFFICE UPGRADED!</div>
-            <div style={{fontSize:18,color:'#a78bfa',marginBottom:14}}>{newOfficeName}</div>
-            <div style={{fontSize:11,color:'#555'}}>Tap anywhere to continue</div>
-          </div>
-        </div>
-      )}
-
-      {milestonePopup&&<div style={{position:'fixed',top:68,left:'50%',transform:'translateX(-50%)',background:'linear-gradient(90deg,#22c55e,#16a34a)',color:'#fff',borderRadius:11,padding:'7px 16px',fontWeight:700,fontSize:12,zIndex:300,whiteSpace:'nowrap'}}>🎯 {milestonePopup}!</div>}
-      {newTabBadge&&<div style={{position:'fixed',top:68,left:'50%',transform:'translateX(-50%)',background:'linear-gradient(90deg,#4f46e5,#7c3aed)',color:'#fff',borderRadius:11,padding:'7px 16px',fontWeight:700,fontSize:12,zIndex:300,whiteSpace:'nowrap'}}>🔓 Unlocked: {newTabBadge.toUpperCase()}!</div>}
-      {flashSale&&<div style={{background:'#7c3aed',padding:'5px 14px',textAlign:'center',fontSize:11,cursor:'pointer'}} onClick={()=>setTab('meta')}>⚡ FLASH SALE! 50% off Gems — {flashTimer}s →</div>}
-
-      {showWelcome&&!welcomeClaimed&&(
-        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.88)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:400}}>
-          <div style={{background:'linear-gradient(135deg,#1a0a2e,#0a0a1e)',border:'2px solid #7c3aed',borderRadius:18,padding:26,maxWidth:290,textAlign:'center'}}>
-            <div style={{fontSize:42,marginBottom:7}}>🎁</div>
-            <div style={{fontSize:19,fontWeight:700,marginBottom:3}}>Welcome Gift!</div>
-            <div style={{fontSize:11,color:'#888',marginBottom:13}}>Expires in {welcomeTimer}s</div>
-            <div style={{background:'#1a1a2e',borderRadius:10,padding:13,marginBottom:13}}>
-              <div style={{fontSize:14,marginBottom:3}}>💎 100 Gems + 💰 $1,000</div>
-              <div style={{fontSize:12,color:'#f59e0b'}}>+ Founder Badge</div>
-            </div>
-            <button onClick={claimWelcome} style={{width:'100%',padding:12,background:'linear-gradient(90deg,#7c3aed,#4f46e5)',color:'#fff',border:'none',borderRadius:11,cursor:'pointer',fontWeight:700,fontSize:15,marginBottom:7}}>Claim FREE</button>
-            <button onClick={()=>{setShowWelcome(false);try{localStorage.setItem('sg_visited','1')}catch(_){}}} style={{background:'none',border:'none',color:'#444',fontSize:11,cursor:'pointer'}}>No thanks</button>
-          </div>
-        </div>
-      )}
-
-      {showOffline&&(
-        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.88)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:400}}>
-          <div style={{background:'#1a1a2e',border:'1px solid #22c55e',borderRadius:18,padding:26,maxWidth:290,textAlign:'center'}}>
-            <div style={{fontSize:42,marginBottom:7}}>💤</div>
-            <div style={{fontSize:17,fontWeight:700,marginBottom:3}}>While you were away…</div>
-            <div style={{fontSize:11,color:'#888',marginBottom:13}}>Your team kept grinding!</div>
-            <div style={{fontSize:28,fontWeight:700,color:'#22c55e',marginBottom:13}}>{fmt(offlineEarned)}</div>
-            <button onClick={()=>claimOffline(false)} style={{width:'100%',padding:12,background:'linear-gradient(90deg,#22c55e,#16a34a)',color:'#fff',border:'none',borderRadius:11,cursor:'pointer',fontWeight:700,fontSize:14,marginBottom:7}}>Collect!</button>
-            <button onClick={()=>claimOffline(true)} style={{width:'100%',padding:10,background:'#1a1a2e',border:'1px solid #7c3aed',color:'#a78bfa',borderRadius:11,cursor:'pointer',fontSize:11}}>📺 Watch Ad — Double + 20 💎</button>
-          </div>
-        </div>
-      )}
-
-      {event&&(
-        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.82)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:300}}>
-          <div style={{background:'#1a1a2e',border:`1px solid ${event.type==='good'?'#22c55e':'#ef4444'}`,borderRadius:14,padding:22,maxWidth:290,textAlign:'center'}}>
-            <div style={{fontSize:28,marginBottom:10}}>{event.type==='good'?'🎉':'⚠️'}</div>
-            <div style={{fontSize:14,marginBottom:17}}>{event.msg}</div>
-            <div style={{display:'flex',gap:9,justifyContent:'center'}}>
-              <button onClick={()=>handleEvent(true)} style={{background:event.type==='good'?'#22c55e':'#ef4444',color:'#fff',border:'none',borderRadius:7,padding:'8px 16px',cursor:'pointer',fontWeight:700}}>{event.type==='good'?'Claim!':'Pay Up'}</button>
-              {event.type==='bad'&&<button onClick={()=>handleEvent(false)} style={{background:'#333',color:'#fff',border:'none',borderRadius:7,padding:'8px 16px',cursor:'pointer'}}>Ignore</button>}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {adWatching&&(
-        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.94)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:400}}>
-          <div style={{textAlign:'center'}}>
-            <div style={{fontSize:50,marginBottom:13}}>📺</div>
-            <div style={{fontSize:16,color:'#fff',marginBottom:5}}>Watching ad…</div>
-            <div style={{fontSize:12,color:'#888'}}>Reward incoming!</div>
-          </div>
-        </div>
-      )}
-
-      {showStreakModal&&(
-        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.88)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:450}}>
-          <div style={{background:'linear-gradient(135deg,#1a0a2e,#0a0a1e)',border:'2px solid #f59e0b',borderRadius:18,padding:26,maxWidth:290,textAlign:'center',animation:'levelUpPop 0.5s ease-out forwards'}}>
-            <div style={{fontSize:52,marginBottom:7}}>{cycleDay===7?'👑':'🔥'}</div>
-            <div style={{fontSize:14,color:'#f59e0b',fontWeight:700,marginBottom:2}}>DAY {loginStreak} LOGIN STREAK!</div>
-            <div style={{fontSize:10,color:'#888',marginBottom:14}}>{cycleDay===7?'Full cycle complete — mega reward!':'Day '+cycleDay+' of 7'}</div>
-            <div style={{background:'#1a1a2e',borderRadius:10,padding:13,marginBottom:14}}>
-              <div style={{fontSize:20,fontWeight:700,color:'#fff'}}>{streakRewardLabel(STREAK_REWARDS[cycleDay-1],companyValue)}</div>
-            </div>
-            <button onClick={claimStreakReward} style={{width:'100%',padding:12,background:'linear-gradient(90deg,#f59e0b,#d97706)',color:'#fff',border:'none',borderRadius:11,cursor:'pointer',fontWeight:700,fontSize:15,marginBottom:7}}>CLAIM REWARD</button>
-            <button onClick={()=>setShowStreakModal(false)} style={{background:'none',border:'none',color:'#555',fontSize:11,cursor:'pointer'}}>Claim later</button>
-          </div>
-        </div>
-      )}
-
-      {ipoShow&&(
-        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.92)',zIndex:600,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:24}}>
-          {confetti.map(c=>(
-            <div key={c.id} style={{position:'fixed',top:'-30px',left:`${c.x}%`,width:c.w,height:c.h,background:c.color,borderRadius:2,animation:`confettiFall ${c.dur}s ${c.delay}s ease-in both`,pointerEvents:'none'}} />
-          ))}
-          <div style={{fontSize:64,marginBottom:8}}>🚀</div>
-          <div style={{fontSize:28,fontWeight:800,color:'#ffd700',textAlign:'center',marginBottom:8}}>YOU WENT PUBLIC!</div>
-          <div style={{fontSize:15,color:'#aaa',textAlign:'center',marginBottom:4}}>IPO #{prestigeLevel} complete</div>
-          <div style={{fontSize:18,color:'#22c55e',fontWeight:700,marginBottom:24}}>{prestigeLevel+1}x Permanent Income Multiplier!</div>
-          <div style={{background:'#1a1a2e',border:'1px solid #ffd700',borderRadius:12,padding:'12px 24px',marginBottom:24,textAlign:'center'}}>
-            <div style={{fontSize:12,color:'#888',marginBottom:4}}>All gameplay progress reset</div>
-            <div style={{fontSize:12,color:'#22c55e'}}>Gems, streak &amp; settings preserved</div>
-          </div>
-          <button onClick={dismissIPO} style={{background:'linear-gradient(135deg,#ffd700,#ff8c00)',color:'#000',border:'none',borderRadius:12,padding:'14px 32px',fontSize:16,fontWeight:700,cursor:'pointer'}}>
-            Start Over — {prestigeLevel+1}x Active!
-          </button>
-        </div>
-      )}
-
-      {/* HEADER */}
-      <div style={{padding:'11px 13px 7px',background:'#0d0d1e',position:'sticky',top:0,zIndex:50}}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:7}}>
-          <div style={{fontSize:16,fontWeight:700,color:'#818cf8'}}>⚡ SILICON GRIND</div>
-          <div style={{display:'flex',gap:7,alignItems:'center'}}>
-            {loginStreak>1&&<div style={{background:'#f59e0b22',border:'1px solid #f59e0b',borderRadius:14,padding:'2px 7px',fontSize:10,color:'#f59e0b'}}>🔥 Day {loginStreak}</div>}
-            {prestigeLevel>0&&<div style={{background:'linear-gradient(135deg,#ffd700,#ff8c00)',borderRadius:14,padding:'2px 7px',fontSize:10,color:'#000',fontWeight:700}}>🚀 P{prestigeLevel}·{prestigeLevel+1}x</div>}
-            {companyValue>=IPO_THRESHOLD&&<div style={{background:'#ffd700',borderRadius:14,padding:'2px 7px',fontSize:10,color:'#000',fontWeight:700,animation:'blink 1s infinite'}}>⚡ IPO!</div>}
-            <button onClick={toggleMusic} title={musicPlaying?'Mute music':'Play music'} style={{background:'#1a1a2e',border:'none',borderRadius:18,padding:'3px 9px',fontSize:14,cursor:'pointer',color:musicPlaying?'#818cf8':'#444',lineHeight:1}}>{musicPlaying?'🎵':'🔇'}</button>
-            <div style={{background:'#1a1a2e',borderRadius:18,padding:'3px 9px',fontSize:11,color:'#a78bfa'}}>💎 {gems}</div>
-          </div>
-        </div>
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:5}}>
-          {[{label:'Cash',value:fmt(displayCash),color:'#22c55e'},{label:'Income/s',value:fmt(income),color:'#60a5fa'},{label:'Value',value:fmt(companyValue),color:'#a78bfa'},{label:'Team',value:`${totalEmps}👥`,color:'#f59e0b'}].map(s=>(
-            <div key={s.label} style={{background:'#1a1a2e',borderRadius:7,padding:'4px 2px',textAlign:'center'}}>
-              <div style={{fontSize:9,color:'#555',marginBottom:1}}>{s.label}</div>
-              <div style={{fontSize:10,fontWeight:700,color:s.color}}>{s.value}</div>
-            </div>
-          ))}
-        </div>
-        {boost&&<div style={{marginTop:4,background:'#f59e0b22',border:'1px solid #f59e0b',borderRadius:6,padding:'2px 7px',fontSize:9,color:'#f59e0b',textAlign:'center'}}>⚡ 2x BOOST — {boostTimer}s</div>}
-        <div style={{marginTop:5,background:'#1a1a2e',borderRadius:7,padding:'4px 7px',display:'flex',alignItems:'center',gap:5,cursor:'pointer'}} onClick={()=>setTab('ship')}>
-          <div style={{fontSize:13}}>{liveEventDef.emoji}</div>
-          <div style={{flex:1}}>
-            <div style={{fontSize:9,fontWeight:700,color:'#f59e0b'}}>{liveEventDef.name}</div>
-            <div style={{background:'#333',borderRadius:3,height:3,marginTop:1}}>
-              <div style={{background:'#f59e0b',height:3,borderRadius:3,width:`${liveEventPct}%`,transition:'width 0.5s'}} />
-            </div>
-          </div>
-          <div style={{fontSize:8,color:'#555',whiteSpace:'nowrap'}}>{liveHrs}h {liveMins}m {liveSecs}s</div>
-        </div>
+      {/* Dev zone */}
+      <div style={{
+        position:'absolute', bottom:'36%', left:'5%',
+        display:'flex', flexDirection:'column', gap:4,
+      }}>
+        <div style={{ fontSize:9, color:'#8888aa', marginBottom:2 }}>DEV ZONE</div>
+        {Array.from({ length: Math.min(devs, 2) }).map((_, i) => (
+          <div key={i} style={{ fontSize:18 }}>🧑‍💻</div>
+        ))}
+        {devs === 0 && <div style={{ fontSize:13, color:'#333' }}>🪑 Empty</div>}
       </div>
 
-      {/* ticker */}
-      <div style={{background:'#0d0d1e',borderTop:'1px solid #1a1a2e',padding:'2px 0',overflow:'hidden'}}>
-        <div style={{whiteSpace:'nowrap',animation:'ticker 18s linear infinite',display:'inline-block',fontSize:9,color:'#4ade80'}}>
-          &nbsp;&nbsp;{companyName} {fmt(companyValue)} ▲ • {fmt(income)}/s • {totalEmps} staff • {OFFICES[officeIdx].name} • 💎 {gems}&nbsp;&nbsp;{companyName} {fmt(companyValue)} ▲ • {fmt(income)}/s • {totalEmps} staff • {OFFICES[officeIdx].name} • 💎 {gems}&nbsp;&nbsp;
-        </div>
+      {/* Design zone */}
+      <div style={{
+        position:'absolute', bottom:'36%', right:'5%',
+        display:'flex', flexDirection:'column', gap:4, alignItems:'flex-end',
+      }}>
+        <div style={{ fontSize:9, color:'#8888aa', marginBottom:2 }}>DESIGN ZONE</div>
+        {Array.from({ length: Math.min(designers, 2) }).map((_, i) => (
+          <div key={i} style={{ fontSize:18 }}>🎨</div>
+        ))}
+        {designers === 0 && <div style={{ fontSize:13, color:'#333' }}>🪑 Empty</div>}
       </div>
 
-      {/* TAB CONTENT */}
-      <div key={tab} style={{padding:11,paddingBottom:86,overflowY:'auto',maxHeight:'calc(100vh - 200px)',animation:'fadeSlideIn 0.22s ease-out'}}>
+      {/* Desk row center */}
+      <div style={{
+        position:'absolute', bottom:'37%', left:'50%', transform:'translateX(-50%)',
+        display:'flex', gap:8, alignItems:'center',
+      }}>
+        {marketers > 0 && <div style={{ fontSize:20 }}>📣</div>}
+        <div style={{ width:60, height:20, background:'#2a2a40', borderRadius:4, border:'1px solid #3a3a55' }} />
+        {marketers > 1 && <div style={{ fontSize:20 }}>📣</div>}
+      </div>
 
-        {tab==='hq'&&(
-          <div>
-            {companyValue>=1e8&&companyValue<IPO_THRESHOLD&&(
-              <div style={{background:'#1a1a2e',borderRadius:12,padding:'12px 16px',marginBottom:12,border:'1px solid #ffd700'}}>
-                <div style={{fontSize:12,color:'#ffd700',marginBottom:6}}>🚀 IPO Progress — {fmt(companyValue)} / $1B</div>
-                <div style={{background:'#0d0d1a',borderRadius:6,height:8,overflow:'hidden'}}>
-                  <div style={{background:'linear-gradient(90deg,#ffd700,#ff8c00)',height:'100%',width:`${Math.min(100,(companyValue/IPO_THRESHOLD)*100).toFixed(1)}%`,transition:'width 0.5s'}}/>
-                </div>
-              </div>
-            )}
-            {companyValue>=IPO_THRESHOLD&&!ipoShow&&(
-              <div style={{background:'linear-gradient(135deg,#1a1400,#2a2000)',border:'2px solid #ffd700',borderRadius:16,padding:20,marginBottom:16,textAlign:'center',animation:'levelUpPop 0.4s ease'}}>
-                <div style={{fontSize:28,marginBottom:8}}>🏆</div>
-                <div style={{fontSize:18,fontWeight:700,color:'#ffd700',marginBottom:4}}>Company Value: {fmt(companyValue)}</div>
-                <div style={{fontSize:13,color:'#aaa',marginBottom:16}}>You&apos;ve reached $1 Billion! Time to go public.</div>
-                <button onClick={doIPO} style={{background:'linear-gradient(135deg,#ffd700,#ff8c00)',color:'#000',border:'none',borderRadius:12,padding:'14px 32px',fontSize:16,fontWeight:700,cursor:'pointer'}}>🚀 Go Public — IPO!</button>
-              </div>
-            )}
-            <BuildingView
-              officeIdx={officeIdx} totalEarned={totalEarned} getIncome={getIncome}
-              employees={employees} equipment={equipment} cash={cash}
-              setCash={setCash} setTotalEarned={setTotalEarned} addFloat={addFloat}
-              ship={ship} shipCooldown={shipCooldown} watchAd={watchAd}
-              milestones={milestones} claimMilestone={claimMilestone} upgradeOffice={upgradeOffice}
-            />
+      {/* Slack notifications popup */}
+      {hasSlack && (
+        <div style={{
+          position:'absolute', top:'20%', right:'2%',
+          background:'#3a1f5e', border:'1px solid #7c3aed44',
+          borderRadius:8, padding:'5px 8px',
+          animation:'sg-slack-pop 4s ease-in-out infinite',
+        }}>
+          <div style={{ fontSize:8, color:'#a78bfa', fontWeight:700 }}>💬 Slack</div>
+          <div style={{ fontSize:7, color:'#e8e8f0', marginTop:1 }}>New message!</div>
+        </div>
+      )}
 
-            {/* Login Streak */}
-            <div style={{marginTop:10,background:'#1a1a2e',borderRadius:13,padding:13}}>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:9}}>
-                <div style={{fontSize:11,fontWeight:700,color:'#f59e0b'}}>🔥 LOGIN STREAK — Day {loginStreak}</div>
-              </div>
-              <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:4,marginBottom:9}}>
-                {STREAK_REWARDS.map((r,i)=>{
-                  const d=i+1,isToday=d===cycleDay,isDone=d<cycleDay
-                  return(
-                    <div key={d} style={{textAlign:'center',background:isDone?'#0f2818':isToday?'#1a0a2e':'#111',border:`1px solid ${isDone?'#22c55e':isToday?'#f59e0b':'#2a2a2a'}`,borderRadius:6,padding:'5px 2px',animation:isToday&&!streakClaimed?'streakPulse 1.5s ease-in-out infinite':'none'}}>
-                      <div style={{fontSize:8,color:isDone?'#22c55e':isToday?'#f59e0b':'#333',fontWeight:700}}>D{d}{d===7?'👑':''}</div>
-                      <div style={{fontSize:13,lineHeight:1.3}}>{isDone?'✓':isToday?'▶':'○'}</div>
-                    </div>
-                  )
-                })}
-              </div>
-              {!streakClaimed
-                ? <button onClick={()=>setShowStreakModal(true)} style={{width:'100%',padding:9,background:'linear-gradient(90deg,#f59e0b,#d97706)',color:'#fff',border:'none',borderRadius:9,cursor:'pointer',fontWeight:700,fontSize:11}}>🎁 CLAIM DAY {cycleDay} REWARD — {streakRewardLabel(STREAK_REWARDS[cycleDay-1],companyValue)}</button>
-                : <div style={{textAlign:'center',fontSize:11,color:'#22c55e',padding:4}}>✓ Today&apos;s reward claimed!</div>
-              }
-            </div>
+      {/* Plant (morale indicator) */}
+      {hasPlant && (
+        <div style={{
+          position:'absolute', bottom:'37%', left:'50%', transform:'translateX(-50%)',
+          fontSize:28, marginBottom:4,
+          animation:'sg-breathe 3s ease-in-out infinite',
+        }}>
+          🪴
+        </div>
+      )}
 
-            {/* Daily Missions */}
-            <div style={{marginTop:8,background:'#1a1a2e',borderRadius:13,padding:13}}>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:9}}>
-                <div style={{fontSize:11,fontWeight:700,color:'#818cf8'}}>📋 DAILY MISSIONS</div>
-                <div style={{fontSize:9,color:'#555'}}>resets {mHH}h {mMM}m {mSS}s</div>
-              </div>
-              {dailyMissions.map(m=>{
-                const pct=Math.min(100,(m.progress/m.goal)*100)
-                const done=m.progress>=m.goal
-                return(
-                  <div key={m.id} style={{background:'#111',borderRadius:9,padding:'9px 11px',marginBottom:6,border:`1px solid ${m.claimed?'#22c55e44':done?'#4f46e555':'#1a1a2e'}`}}>
-                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:5}}>
-                      <div style={{fontSize:11}}>{MISSION_ICONS[m.type]} {m.label}</div>
-                      {m.claimed
-                        ? <span style={{fontSize:11,color:'#22c55e',fontWeight:700}}>✓</span>
-                        : <button onClick={()=>claimDailyMission(m.id)} disabled={!done} style={{background:done?'linear-gradient(90deg,#4f46e5,#7c3aed)':'#1e1e3e',color:done?'#fff':'#444',border:'none',borderRadius:5,padding:'3px 9px',cursor:done?'pointer':'default',fontSize:10,fontWeight:700,whiteSpace:'nowrap'}}>
-                            {m.rewardType==='gems'?`${m.rewardVal} 💎`:fmt(Math.max(m.rewardVal,Math.floor(companyValue*(m.rewardPct||0))))}
-                          </button>
-                      }
-                    </div>
-                    <div style={{background:'#222',borderRadius:3,height:4}}>
-                      <div style={{background:m.claimed?'#22c55e':done?'#4f46e5':'#f59e0b',height:4,borderRadius:3,width:`${pct}%`,transition:'width 0.4s'}} />
-                    </div>
-                    <div style={{fontSize:9,color:'#555',marginTop:3}}>
-                      {m.type==='earned'||m.type==='spend'
-                        ? `${fmt(Math.min(m.progress,m.goal))} / ${fmt(m.goal)}`
-                        : `${Math.min(m.progress,m.goal)} / ${m.goal}`
-                      }
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
+      {/* Company sign */}
+      <div style={{
+        position:'absolute', bottom:'36%', left:'50%', transform:'translateX(-50%)',
+        fontSize:10, color:'#60a5fa', fontWeight:800, whiteSpace:'nowrap',
+        textShadow:'0 0 8px #60a5fa55',
+      }}>
+        {companyName.toUpperCase()}
+      </div>
+    </div>
+  )
+}
+
+// ── Open Floor Plan Scene ──
+function OpenPlanScene({ employees, equipment, tools, companyName }: SceneProps) {
+  const devs = employees['dev'] || 0
+  const marketers = employees['marketer'] || 0
+  const hasPingPong = equipment['pingpong']
+  const hasSlack = tools['slack']
+
+  return (
+    <div style={{
+      width:'100%', height:'100%',
+      background:'linear-gradient(180deg,#1a1510 0%,#0d0d08 100%)',
+      position:'relative', overflow:'hidden',
+    }}>
+      {/* Exposed brick wall */}
+      <div style={{
+        position:'absolute', top:0, left:0, right:0, height:'40%',
+        backgroundImage:`repeating-linear-gradient(
+          0deg, transparent, transparent 10px,
+          rgba(60,30,20,0.3) 10px, rgba(60,30,20,0.3) 12px
+        ), repeating-linear-gradient(
+          90deg, transparent, transparent 25px,
+          rgba(60,30,20,0.2) 25px, rgba(60,30,20,0.2) 27px
+        )`,
+        background:'#2a1a10',
+      }} />
+
+      {/* Neon sign */}
+      <div style={{
+        position:'absolute', top:15, left:'50%', transform:'translateX(-50%)',
+        fontSize:11, fontWeight:900, color:'#4ade80', whiteSpace:'nowrap',
+        animation:'sg-neon-blink 5s ease-in-out infinite',
+        textShadow:'0 0 8px #4ade80, 0 0 20px #4ade80',
+        letterSpacing:'0.1em',
+      }}>
+        WE&apos;RE HIRING
+      </div>
+
+      {/* Floor */}
+      <div style={{
+        position:'absolute', bottom:0, left:0, right:0, height:'35%',
+        background:'linear-gradient(180deg,#1e1a10 0%,#151008 100%)',
+        borderTop:'2px solid #2a2010',
+      }} />
+
+      {/* Ping pong table */}
+      {hasPingPong && (
+        <div style={{
+          position:'absolute', bottom:'36%', left:'50%', transform:'translateX(-50%)',
+          width:90, height:40,
+          background:'linear-gradient(90deg,#1a6030,#1a7030,#1a6030)',
+          border:'3px solid #2a7040', borderRadius:4,
+          display:'flex', alignItems:'center', justifyContent:'center',
+          position:'relative' as any,
+        }}>
+          <div style={{ width:'100%', height:2, background:'#fff', opacity:0.5 }} />
+          {/* Ball */}
+          <div style={{
+            position:'absolute',
+            width:8, height:8, borderRadius:'50%',
+            background:'#fff',
+            animation:'sg-ping-pong 1.8s ease-in-out infinite',
+            top:'40%',
+          }} />
+        </div>
+      )}
+
+      {/* Desk rows */}
+      <div style={{
+        position:'absolute', bottom:'36%', left:'5%', right:'5%',
+        display:'flex', justifyContent:'space-around', flexWrap:'wrap', gap:4,
+      }}>
+        {Array.from({ length: Math.min(devs + marketers, 6) }).map((_, i) => (
+          <div key={i} style={{
+            width:30, height:18, background:'#2a2a2a', borderRadius:3,
+            border:'1px solid #3a3a3a',
+            display:'flex', alignItems:'center', justifyContent:'center',
+            fontSize:12,
+          }}>
+            {i < devs ? '🧑‍💻' : '📣'}
           </div>
-        )}
+        ))}
+      </div>
 
-        {tab==='team'&&(
-          <div>
-            <div style={{fontSize:10,color:'#666',marginBottom:9}}>HIRE TEAM MEMBERS</div>
-            {EMPLOYEES.map(emp=>{
-              const count=employees[emp.id]||0,cost=empCost(emp.cost,count)
-              return(
-                <div key={emp.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',background:'#1a1a2e',border:'1px solid #2a2a2a',borderRadius:11,padding:'10px 12px',marginBottom:6}}>
-                  <div>
-                    <div style={{fontSize:13}}>{emp.emoji} <strong>{emp.name}</strong> {count>0&&<span style={{background:emp.color,borderRadius:9,padding:'1px 6px',fontSize:9}}>×{count}</span>}</div>
-                    <div style={{fontSize:9,color:'#555'}}>{fmt(emp.income*OFFICES[officeIdx].multiplier)}/s each</div>
-                  </div>
-                  <button onClick={()=>buyEmployee(emp)} disabled={cash<cost} style={{background:cash>=cost?`linear-gradient(90deg,${emp.color},${emp.color}88)`:'#1e1e3e',color:cash>=cost?'#fff':'#444',border:'none',borderRadius:7,padding:'6px 10px',cursor:'pointer',fontSize:11,fontWeight:700}}>
-                    {fmt(cost)}
-                  </button>
-                </div>
-              )
-            })}
-          </div>
-        )}
+      {/* Slack notification */}
+      {hasSlack && (
+        <div style={{
+          position:'absolute', top:'30%', right:'2%',
+          background:'#3a1f5e', border:'1px solid #7c3aed44',
+          borderRadius:8, padding:'4px 8px',
+          animation:'sg-slack-pop 5s ease-in-out 1s infinite',
+        }}>
+          <div style={{ fontSize:8, color:'#a78bfa', fontWeight:700 }}>💬 #general</div>
+          <div style={{ fontSize:7, color:'#e8e8f0', marginTop:1 }}>just shipped 🚀</div>
+        </div>
+      )}
 
-        {tab==='grow'&&(
-          <div>
-            <div style={{fontSize:10,color:'#666',marginBottom:9}}>TOOLS & SOFTWARE</div>
-            {TOOLS.map(tool=>(
-              <div key={tool.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',background:tools[tool.id]?'#0f2818':'#1a1a2e',border:`1px solid ${tools[tool.id]?'#22c55e':'#2a2a2a'}`,borderRadius:11,padding:'10px 12px',marginBottom:6}}>
-                <div>
-                  <div style={{fontSize:13}}>{tool.emoji} <strong>{tool.name}</strong></div>
-                  <div style={{fontSize:9,color:'#555'}}>{tool.multiplier}x multiplier</div>
-                </div>
-                <button onClick={()=>buyTool(tool)} disabled={tools[tool.id]||cash<tool.cost} style={{background:tools[tool.id]?'#1e3a2e':cash>=tool.cost?'#4f46e5':'#1e1e3e',color:tools[tool.id]?'#22c55e':'#fff',border:'none',borderRadius:7,padding:'6px 10px',cursor:'pointer',fontSize:11,fontWeight:700}}>
-                  {tools[tool.id]?'✓':fmt(tool.cost)}
-                </button>
-              </div>
-            ))}
-            <div style={{fontSize:10,color:'#666',margin:'12px 0 9px'}}>EQUIPMENT</div>
-            {EQUIPMENT.map(eq=>(
-              <div key={eq.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',background:equipment[eq.id]?'#0f2818':'#1a1a2e',border:`1px solid ${equipment[eq.id]?'#22c55e':'#2a2a2a'}`,borderRadius:11,padding:'10px 12px',marginBottom:6}}>
-                <div>
-                  <div style={{fontSize:13}}>{eq.emoji} <strong>{eq.name}</strong></div>
-                  <div style={{fontSize:9,color:'#555'}}>{eq.multiplier}x multiplier</div>
-                </div>
-                <button onClick={()=>buyEquipment(eq)} disabled={equipment[eq.id]||cash<eq.cost} style={{background:equipment[eq.id]?'#1e3a2e':cash>=eq.cost?'#4f46e5':'#1e1e3e',color:equipment[eq.id]?'#22c55e':'#fff',border:'none',borderRadius:7,padding:'6px 10px',cursor:'pointer',fontSize:11,fontWeight:700}}>
-                  {equipment[eq.id]?'✓':fmt(eq.cost)}
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+      {/* Company sign on wall */}
+      <div style={{
+        position:'absolute', top:'22%', left:'50%', transform:'translateX(-50%)',
+        fontSize:13, fontWeight:900, color:'#fbbf24', opacity:0.7,
+        whiteSpace:'nowrap', letterSpacing:'0.15em',
+      }}>
+        {companyName.toUpperCase()}
+      </div>
 
-        {tab==='ship'&&(
-          <div>
-            <div style={{background:'#1a1a2e',border:'1px solid #f59e0b',borderRadius:13,padding:13,marginBottom:11}}>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:5}}>
-                <div style={{fontSize:14,fontWeight:700}}>{liveEventDef.emoji} {liveEventDef.name}</div>
-                <div style={{fontSize:9,color:'#f59e0b'}}>{liveHrs}h {liveMins}m left</div>
-              </div>
-              <div style={{fontSize:10,color:'#777',marginBottom:6}}>{liveEventDef.desc}</div>
-              <div style={{background:'#333',borderRadius:4,height:6,marginBottom:5}}>
-                <div style={{background:'#f59e0b',height:6,borderRadius:4,width:`${liveEventPct}%`,transition:'width 0.5s'}} />
-              </div>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                <div style={{fontSize:9,color:'#555'}}>{Math.min(liveEvent.progress,liveEventDef.goal)} / {liveEventDef.goal}</div>
-                <button onClick={claimLiveEvent} disabled={liveEvent.progress<liveEventDef.goal||liveEvent.claimed} style={{background:liveEvent.progress>=liveEventDef.goal&&!liveEvent.claimed?'#f59e0b':'#1e1e3e',color:liveEvent.progress>=liveEventDef.goal&&!liveEvent.claimed?'#000':'#444',border:'none',borderRadius:6,padding:'4px 11px',cursor:'pointer',fontSize:10,fontWeight:700}}>
-                  {liveEvent.claimed?'✓ Claimed':`Claim ${rewardLabel(liveEventDef)}`}
-                </button>
-              </div>
-            </div>
+      {/* Income graph deco */}
+      <div style={{
+        position:'absolute', bottom:'38%', right:'2%',
+        width:50, height:40,
+        display:'flex', alignItems:'flex-end', gap:2,
+      }}>
+        {[20,35,25,45,38,55,42,60].map((h,i) => (
+          <div key={i} style={{
+            width:4, height:h/2, background:'#4ade80',
+            borderRadius:'1px 1px 0 0',
+            opacity:0.5 + i * 0.06,
+          }} />
+        ))}
+      </div>
+    </div>
+  )
+}
 
-            <div style={{background:'#1a1a2e',borderRadius:13,padding:17,marginBottom:11,textAlign:'center'}}>
-              <div style={{fontSize:11,color:'#666',marginBottom:9}}>LUCKY SPIN — Once daily</div>
-              <div style={{position:'relative',width:185,height:185,margin:'0 auto 11px'}}>
-                <div style={{width:185,height:185,borderRadius:'50%',border:'4px solid #4f46e5',position:'relative',overflow:'hidden',transition:spinning?'transform 3s cubic-bezier(0.17,0.67,0.12,0.99)':'none',transform:`rotate(${spinAngle}deg)`,background:'#111'}}>
-                  {SPIN_REWARDS.map((r,i)=>(
-                    <div key={i} style={{position:'absolute',top:'50%',left:'50%',width:'48%',height:2,background:r.color,transformOrigin:'0 50%',transform:`rotate(${(i/SPIN_REWARDS.length)*360}deg) translateY(-50%)`}}>
-                      <span style={{position:'absolute',right:-40,top:-7,fontSize:8,color:'#fff',whiteSpace:'nowrap'}}>{r.type==='cash'?fmt(Math.max(r.base,Math.floor(companyValue*r.pct))):r.label}</span>
-                    </div>
-                  ))}
-                  <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:25}}>🎰</div>
-                </div>
-                <div style={{position:'absolute',top:-7,left:'50%',transform:'translateX(-50%)',fontSize:19}}>▼</div>
-              </div>
-              {spinResult&&<div style={{fontSize:16,fontWeight:700,color:'#22c55e',marginBottom:7}}>🎉 {spinResult}!</div>}
-              <button onClick={doSpin} disabled={spinning||spunToday} style={{background:spinning||spunToday?'#1e1e3e':'linear-gradient(90deg,#f59e0b,#d97706)',color:spinning||spunToday?'#444':'#fff',border:'none',borderRadius:10,padding:'10px 30px',cursor:'pointer',fontWeight:700,fontSize:13,marginBottom:6}}>
-                {spinning?'Spinning…':spunToday?'Come back tomorrow!':'🎰 FREE SPIN'}
-              </button>
-              {spunToday&&<button onClick={()=>watchAd('spin')} style={{display:'block',width:'100%',background:'#1a1a2e',border:'1px solid #4f46e5',color:'#818cf8',borderRadius:8,padding:8,cursor:'pointer',fontSize:11}}>📺 Watch Ad for Extra Spin</button>}
-            </div>
+// ── Skyscraper HQ Scene ──
+function SkyscraperScene({ employees, companyName, income, prestigeLevel }: SceneProps) {
+  const totalStaff = Object.values(employees).reduce((a, b) => a + b, 0)
 
-            <div style={{background:'#1a1a2e',border:'1px solid #f59e0b',borderRadius:13,padding:13,textAlign:'center'}}>
-              <div style={{fontSize:11,color:'#666',marginBottom:7}}>INVESTOR MEETING — Tap fast!</div>
-              <InvestorMeeting setCash={setCash} setTotalEarned={setTotalEarned} addFloat={addFloat} companyValue={companyValue} />
-            </div>
-          </div>
-        )}
-
-        {tab==='meta'&&(
-          <div>
-            <div style={{fontSize:10,color:'#666',marginBottom:9}}>GEM PACKS</div>
-            {GEM_PACKS.map(pack=>(
-              <div key={pack.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',background:flashSale?'#1a0f2e':'#1a1a2e',border:`1px solid ${flashSale?'#7c3aed':'#2a2a2a'}`,borderRadius:11,padding:'11px 12px',marginBottom:8}}>
-                <div>
-                  <div style={{fontSize:13}}>{pack.emoji} <strong>{pack.name}</strong></div>
-                  <div style={{fontSize:9,color:'#a78bfa'}}>{pack.gems} gems{flashSale&&<span style={{color:'#f59e0b'}}> ⚡ 50% OFF</span>}</div>
-                </div>
-                <button onClick={()=>{setGems(g=>g+pack.gems);addFloat(`+${pack.gems} 💎`)}} style={{background:'linear-gradient(90deg,#7c3aed,#4f46e5)',color:'#fff',border:'none',borderRadius:7,padding:'8px 11px',cursor:'pointer',fontWeight:700,fontSize:11}}>
-                  {flashSale?'50% OFF':`$${pack.price.toFixed(2)}`}
-                </button>
-              </div>
-            ))}
-
-            <div style={{fontSize:10,color:'#666',margin:'12px 0 9px'}}>VIP PASS</div>
-            <div style={{background:'linear-gradient(135deg,#1a0a2e,#0a0a1e)',border:'1px solid #7c3aed',borderRadius:13,padding:13,textAlign:'center',marginBottom:12}}>
-              <div style={{fontSize:24,marginBottom:5}}>👑</div>
-              <div style={{fontSize:15,fontWeight:700,marginBottom:3}}>VIP Pass</div>
-              <div style={{fontSize:10,color:'#888',marginBottom:9}}>2x idle income • No ad waits • Exclusive features</div>
-              <button style={{background:'linear-gradient(90deg,#7c3aed,#4f46e5)',color:'#fff',border:'none',borderRadius:10,padding:'10px 24px',cursor:'pointer',fontWeight:700,fontSize:13}}>$2.99/month</button>
-            </div>
-
-            <div style={{fontSize:10,color:'#666',marginBottom:9}}>SPEND GEMS</div>
-            {[
-              {label:'☕ Coffee Boost', sub:'5min 2x income', cost:10, action:()=>{setBoost(true);setBoostTimer(300)}},
-              {label:'⚡ Skip Cooldown',sub:'Reset ship timer',cost:15,action:()=>setShipCooldown(0)},
-              {label:'🎨 Office Theme', sub:'Custom skin',     cost:25,action:()=>addFloat('🎨 Applied!')},
-              {label:'🐕 Mascot',       sub:'Boost morale',   cost:50,action:()=>addFloat('🐕 Woof!')},
-              {label:'🎰 Extra Spin',   sub:'Spin again',     cost:20,action:()=>setSpunToday(false)},
-            ].map(item=>(
-              <div key={item.label} style={{display:'flex',justifyContent:'space-between',alignItems:'center',background:'#1a1a2e',border:'1px solid #2a2a2a',borderRadius:11,padding:'10px 12px',marginBottom:6}}>
-                <div>
-                  <div style={{fontSize:12,fontWeight:700}}>{item.label}</div>
-                  <div style={{fontSize:9,color:'#555'}}>{item.sub}</div>
-                </div>
-                <button onClick={()=>spendGems(item.cost,item.action)} disabled={gems<item.cost} style={{background:gems>=item.cost?'linear-gradient(90deg,#7c3aed,#4f46e5)':'#1e1e3e',color:gems>=item.cost?'#fff':'#444',border:'none',borderRadius:7,padding:'6px 10px',cursor:'pointer',fontWeight:700,fontSize:11}}>
-                  💎 {item.cost}
-                </button>
-              </div>
-            ))}
-
-            <div style={{fontSize:10,color:'#666',margin:'12px 0 9px'}}>LEADERBOARD</div>
-            {allEntries.map((entry,i)=>(
-              <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',background:entry.name.includes('⭐')?'#0f1a2e':'#1a1a2e',border:`1px solid ${entry.name.includes('⭐')?'#4f46e5':'#2a2a2a'}`,borderRadius:9,padding:'8px 12px',marginBottom:4}}>
-                <div style={{display:'flex',alignItems:'center',gap:8}}>
-                  <div style={{fontSize:12,fontWeight:700,color:i===0?'#f59e0b':i===1?'#aaa':i===2?'#cd7f32':'#444'}}>#{i+1}</div>
-                  <div style={{fontSize:11}}>{entry.name}</div>
-                </div>
-                <div style={{fontSize:10,color:'#a78bfa',fontWeight:700}}>{fmt(entry.value)}</div>
-              </div>
-            ))}
-
-            <div style={{fontSize:10,color:'#666',margin:'14px 0 9px'}}>🚀 IPO HALL OF FAME</div>
-            {[...PRESTIGE_BOARD,...(prestigeLevel>0?[{name:`${companyName} ⭐`,ipos:prestigeLevel}]:[])]
-              .sort((a,b)=>b.ipos-a.ipos)
-              .map((e,i)=>{
-                const isPlayer=e.name.includes('⭐')
-                return(
-                  <div key={e.name} style={{display:'flex',justifyContent:'space-between',alignItems:'center',background:isPlayer?'rgba(255,215,0,0.08)':'#1a1a2e',border:`1px solid ${isPlayer?'#ffd700':'#2a2a2a'}`,borderRadius:9,padding:'8px 12px',marginBottom:4}}>
-                    <div style={{display:'flex',alignItems:'center',gap:8}}>
-                      <div style={{fontSize:12,fontWeight:700,color:i===0?'#ffd700':i===1?'#aaa':i===2?'#cd7f32':'#444'}}>#{i+1}</div>
-                      <div style={{fontSize:11,color:isPlayer?'#ffd700':'#fff'}}>{e.name}</div>
-                    </div>
-                    <div style={{fontSize:10,color:'#ffd700',fontWeight:700}}>{e.ipos} IPO{e.ipos!==1?'s':''}</div>
-                  </div>
-                )
-              })}
-            {prestigeLevel===0&&<div style={{fontSize:11,color:'#444',textAlign:'center',marginTop:4}}>Reach $1B to join the Hall of Fame</div>}
-          </div>
-        )}
-
-        {tab==='settings'&&(
-          <div>
-            {/* AUDIO */}
-            <div style={{background:'#1a1a2e',borderRadius:13,padding:13,marginBottom:8}}>
-              <div style={{fontSize:10,color:'#666',marginBottom:9,fontWeight:700,letterSpacing:1}}>AUDIO</div>
-              {[
-                {label:'🎵 Music',      active:musicPlaying,  onToggle:toggleMusic},
-                {label:'🔊 Sound FX',   active:sfxEnabled,    onToggle:()=>setSfxEnabled(v=>!v)},
-              ].map(row=>(
-                <div key={row.label} style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
-                  <div style={{fontSize:12}}>{row.label}</div>
-                  <div onClick={row.onToggle} style={{width:44,height:24,borderRadius:12,background:row.active?'#22c55e':'#2a2a3e',position:'relative',cursor:'pointer',transition:'background 0.2s',flexShrink:0}}>
-                    <div style={{position:'absolute',top:3,left:row.active?21:3,width:18,height:18,borderRadius:'50%',background:row.active?'#fff':'#666',transition:'left 0.2s'}} />
-                  </div>
-                </div>
+  return (
+    <div style={{
+      width:'100%', height:'100%',
+      background:'linear-gradient(180deg,#050514 0%,#0a0a20 100%)',
+      position:'relative', overflow:'hidden',
+    }}>
+      {/* City skyline */}
+      <div style={{
+        position:'absolute', top:0, left:0, right:0, bottom:'30%',
+        background:'linear-gradient(180deg,#050514 0%,#0d1030 100%)',
+        overflow:'hidden',
+      }}>
+        {/* City buildings */}
+        {[
+          { left:'0%',  w:'12%', h:'55%', color:'#0d1530' },
+          { left:'10%', w:'8%',  h:'70%', color:'#0d1a3a' },
+          { left:'16%', w:'10%', h:'45%', color:'#0a1228' },
+          { left:'24%', w:'7%',  h:'60%', color:'#0d1535' },
+          { left:'56%', w:'9%',  h:'50%', color:'#0d1228' },
+          { left:'63%', w:'12%', h:'75%', color:'#0a1530' },
+          { left:'73%', w:'8%',  h:'55%', color:'#0d1a3a' },
+          { left:'80%', w:'10%', h:'65%', color:'#0d1228' },
+          { left:'88%', w:'8%',  h:'45%', color:'#0a1530' },
+        ].map((b, i) => (
+          <div key={i} style={{
+            position:'absolute', bottom:0, left:b.left,
+            width:b.w, height:b.h, background:b.color,
+            borderTop:'1px solid #1a2a4a',
+            overflow:'hidden',
+          }}>
+            {/* Building windows */}
+            <div style={{
+              display:'grid', gridTemplateColumns:'repeat(3,1fr)',
+              gap:2, padding:3, height:'100%',
+            }}>
+              {Array.from({ length:12 }).map((_, j) => (
+                <div key={j} style={{
+                  background: Math.random() > 0.5 ? '#fbbf2422' : 'transparent',
+                  borderRadius:1,
+                  animation:`sg-twinkle ${2 + j * 0.3}s ease-in-out ${j * 0.2}s infinite`,
+                }} />
               ))}
             </div>
+          </div>
+        ))}
 
-            {/* PROFILE */}
-            <div style={{background:'#1a1a2e',borderRadius:13,padding:13,marginBottom:8}}>
-              <div style={{fontSize:10,color:'#666',marginBottom:9,fontWeight:700,letterSpacing:1}}>PROFILE</div>
-              <div style={{fontSize:11,color:'#888',marginBottom:6}}>🏢 Company Name</div>
-              <div style={{display:'flex',gap:7}}>
-                <input
-                  value={companyNameInput}
-                  onChange={e=>setCompanyNameInput(e.target.value)}
-                  maxLength={20}
-                  placeholder="Your Company"
-                  style={{flex:1,background:'#111',border:'1px solid #2a2a3e',borderRadius:7,padding:'7px 10px',color:'#fff',fontSize:12,outline:'none'}}
-                />
-                <button onClick={()=>{const n=companyNameInput.trim()||'Your Company';setCompanyName(n);setCompanyNameInput(n);addFloat('✓ Name saved!')}} style={{background:'linear-gradient(90deg,#4f46e5,#7c3aed)',color:'#fff',border:'none',borderRadius:7,padding:'7px 14px',cursor:'pointer',fontWeight:700,fontSize:11,whiteSpace:'nowrap'}}>Save</button>
-              </div>
-            </div>
+        {/* Stars */}
+        {Array.from({ length:20 }).map((_, i) => (
+          <div key={i} style={{
+            position:'absolute',
+            top: `${Math.random() * 60}%`,
+            left: `${Math.random() * 100}%`,
+            width:2, height:2, borderRadius:'50%',
+            background:'#fff',
+            animation:`sg-twinkle ${1.5 + Math.random() * 3}s ease-in-out ${Math.random() * 2}s infinite`,
+          }} />
+        ))}
+      </div>
 
-            {/* STATS */}
-            <div style={{background:'#1a1a2e',borderRadius:13,padding:13,marginBottom:8}}>
-              <div style={{fontSize:10,color:'#666',marginBottom:9,fontWeight:700,letterSpacing:1}}>STATS</div>
-              {[
-                {icon:'💰',label:'Total Earned',    value:fmt(totalEarned)},
-                {icon:'👥',label:'Total Hired',      value:`${totalHires} employees`},
-                {icon:'🚀',label:'Features Shipped', value:`${totalShips}`},
-                {icon:'📅',label:'Days Played',      value:`${daysPlayed}`},
-                {icon:'🔥',label:'Login Streak',     value:`Day ${loginStreak}`},
-              ].map(s=>(
-                <div key={s.label} style={{display:'flex',justifyContent:'space-between',alignItems:'center',borderBottom:'1px solid #2a2a2a',paddingBottom:7,marginBottom:7}}>
-                  <div style={{fontSize:11,color:'#888'}}>{s.icon} {s.label}</div>
-                  <div style={{fontSize:12,fontWeight:700,color:'#fff'}}>{s.value}</div>
-                </div>
-              ))}
-              {prestigeLevel>0&&(
-                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',paddingBottom:7}}>
-                  <div style={{fontSize:11,color:'#888'}}>🚀 IPO Count</div>
-                  <div style={{fontSize:12,fontWeight:700,color:'#ffd700'}}>{prestigeLevel}x</div>
-                </div>
-              )}
-            </div>
+      {/* Glass floor-to-ceiling windows */}
+      <div style={{
+        position:'absolute', inset:0,
+        background:'linear-gradient(180deg,rgba(96,165,250,0.03) 0%,transparent 50%)',
+        pointerEvents:'none',
+      }} />
 
-            {/* DANGER ZONE */}
-            <div style={{background:'#1a0a0a',border:'1px solid #ef444444',borderRadius:13,padding:13,marginBottom:8}}>
-              <div style={{fontSize:10,color:'#ef4444',marginBottom:9,fontWeight:700,letterSpacing:1}}>DANGER ZONE</div>
-              {!showResetConfirm
-                ? <button onClick={()=>setShowResetConfirm(true)} style={{width:'100%',padding:10,background:'#1e1010',border:'1px solid #ef4444',color:'#ef4444',borderRadius:9,cursor:'pointer',fontWeight:700,fontSize:12}}>🗑️ Reset All Progress</button>
-                : <div>
-                    <div style={{fontSize:11,color:'#888',marginBottom:10,textAlign:'center'}}>This will erase <strong style={{color:'#fff'}}>all data</strong> permanently. Are you sure?</div>
-                    <div style={{display:'flex',gap:8}}>
-                      <button onClick={()=>setShowResetConfirm(false)} style={{flex:1,padding:9,background:'#1a1a2e',border:'1px solid #2a2a2a',color:'#888',borderRadius:9,cursor:'pointer',fontWeight:700,fontSize:11}}>Cancel</button>
-                      <button onClick={resetGame} style={{flex:1,padding:9,background:'#ef4444',border:'none',color:'#fff',borderRadius:9,cursor:'pointer',fontWeight:700,fontSize:11}}>Yes, Delete Everything</button>
-                    </div>
-                  </div>
-              }
-            </div>
+      {/* Office floor */}
+      <div style={{
+        position:'absolute', bottom:0, left:0, right:0, height:'35%',
+        background:'linear-gradient(180deg,#1a1a2e 0%,#0d0d1a 100%)',
+        borderTop:'2px solid #2a2a4a',
+      }} />
 
-            {/* CREDITS */}
-            <div style={{background:'#1a1a2e',borderRadius:13,padding:13,textAlign:'center'}}>
-              <div style={{fontSize:18,marginBottom:5}}>⚡</div>
-              <div style={{fontSize:14,fontWeight:700,color:'#818cf8',marginBottom:3}}>Silicon Grind</div>
-              <div style={{fontSize:10,color:'#555',marginBottom:2}}>v{GAME_VERSION}</div>
-              <div style={{fontSize:9,color:'#333',marginBottom:2}}>Built with Next.js 16 &amp; Web Audio API</div>
-              <div style={{fontSize:9,color:'#333'}}>© 2025 — All Rights Reserved</div>
-            </div>
+      {/* Marble lobby accent */}
+      <div style={{
+        position:'absolute', bottom:'30%', left:0, right:0, height:4,
+        background:'linear-gradient(90deg,#a78bfa55,#60a5fa55,#a78bfa55)',
+      }} />
+
+      {/* Holographic screen */}
+      <div style={{
+        position:'absolute', bottom:'36%', left:'50%', transform:'translateX(-50%)',
+        width:100, height:50,
+        background:'rgba(96,165,250,0.05)',
+        border:'1px solid rgba(96,165,250,0.3)',
+        borderRadius:6,
+        display:'flex', flexDirection:'column', alignItems:'center',
+        justifyContent:'center', padding:6,
+      }}>
+        <div style={{ fontSize:8, color:'#60a5fa66', marginBottom:3, letterSpacing:'0.1em' }}>
+          COMPANY VALUE
+        </div>
+        <div style={{ fontSize:11, fontWeight:900, color:'#60a5fa' }}>
+          {fmtCash(income * 3600)}/hr
+        </div>
+        {prestigeLevel > 0 && (
+          <div style={{ fontSize:9, color:'#a78bfa', marginTop:2 }}>
+            ×{prestigeLevel + 1} Prestige
           </div>
         )}
       </div>
 
-      {/* WORK button */}
-      <div style={{position:'fixed',bottom:58,left:'50%',transform:'translateX(-50%)',zIndex:50}}>
-        <button onClick={work} style={{width:64,height:64,borderRadius:'50%',background:'linear-gradient(135deg,#4f46e5,#7c3aed)',border:'3px solid #818cf8',color:'#fff',fontSize:11,fontWeight:700,cursor:'pointer',animation:'workPulse 2s ease-in-out infinite'}}>WORK</button>
+      {/* Elevator */}
+      <div style={{
+        position:'absolute', bottom:'30%', right:'8%',
+        width:30, height:70,
+        background:'#1a1a2e', border:'2px solid #2a2a4a',
+        borderRadius:'4px 4px 0 0',
+        overflow:'hidden',
+      }}>
+        <div style={{
+          width:'100%', height:'40%',
+          background:'linear-gradient(180deg,#2a2a4a,#1a1a35)',
+          animation:'sg-elevator 4s ease-in-out infinite',
+          display:'flex', alignItems:'center', justifyContent:'center',
+          fontSize:12,
+        }}>🛗</div>
       </div>
 
-      {/* bottom nav */}
-      <div style={{position:'fixed',bottom:0,left:'50%',transform:'translateX(-50%)',width:'100%',maxWidth:480,background:'#0d0d1e',borderTop:'1px solid #1a1a2e',display:'flex',justifyContent:'space-around',padding:'4px 0',zIndex:50}}>
-        {[{id:'hq',icon:'🏠',label:'HQ'},{id:'team',icon:'👥',label:'Team'},{id:'grow',icon:'📈',label:'Grow'},{id:'ship',icon:'🚀',label:'Ship'},{id:'meta',icon:'💎',label:'Store'},{id:'settings',icon:'⚙️',label:'Set'}].map(t=>{
-          const locked=!unlockedTabs.includes(t.id)
-          return(
-            <button key={t.id} onClick={()=>!locked&&setTab(t.id)} style={{background:'none',border:'none',color:locked?'#222':tab===t.id?'#818cf8':'#444',cursor:locked?'default':'pointer',fontSize:9,display:'flex',flexDirection:'column',alignItems:'center',gap:2,padding:'3px 7px',position:'relative'}}>
-              <span style={{fontSize:18,filter:locked?'grayscale(1) opacity(0.15)':'none'}}>{t.icon}</span>
-              {t.label}
-              {locked&&<span style={{fontSize:7,color:'#2a2a2a'}}>🔒</span>}
-              {newTabBadge===t.id&&<span style={{position:'absolute',top:0,right:2,width:6,height:6,background:'#ef4444',borderRadius:'50%'}} />}
-            </button>
+      {/* Stock ticker */}
+      <div style={{
+        position:'absolute', bottom:'30%', left:0, right:0,
+        overflow:'hidden', height:16,
+        background:'rgba(13,13,26,0.8)',
+        borderTop:'1px solid rgba(96,165,250,0.2)',
+        borderBottom:'1px solid rgba(96,165,250,0.2)',
+        display:'flex', alignItems:'center',
+      }}>
+        <div style={{
+          whiteSpace:'nowrap', fontSize:9, color:'#4ade80',
+          animation:'sg-ticker 12s linear infinite',
+          paddingLeft:'100%',
+          fontFamily:'monospace',
+        }}>
+          {companyName.toUpperCase()} ▲ +{(Math.random() * 5 + 1).toFixed(2)}%  •  TECH +1.2%  •  NASDAQ ▲  •  Series {['A','B','C','D'][Math.min(prestigeLevel, 3)]} Funding  •  {totalStaff} employees  •
+        </div>
+      </div>
+
+      {/* Employee figures on floor */}
+      <div style={{
+        position:'absolute', bottom:'33%', left:'5%', right:'18%',
+        display:'flex', gap:6, flexWrap:'wrap',
+      }}>
+        {EMPLOYEES.slice(0, 6).map(emp => {
+          const count = employees[emp.id] || 0
+          if (count === 0) return null
+          return (
+            <div key={emp.id} style={{ fontSize:18, animation:'sg-breathe 2.5s ease-in-out infinite' }}>
+              {emp.emoji}
+            </div>
           )
         })}
       </div>
 
-      <style>{`
-        @keyframes floatUp{0%{opacity:1;transform:translateY(0)}100%{opacity:0;transform:translateY(-52px)}}
-        @keyframes ticker{from{transform:translateX(0)}to{transform:translateX(-50%)}}
-        @keyframes blink{0%,100%{opacity:1}50%{opacity:0.15}}
-        @keyframes shake{0%,100%{transform:translateX(0)}10%{transform:translateX(-8px) rotate(-1deg)}20%{transform:translateX(8px) rotate(1deg)}30%{transform:translateX(-6px)}50%{transform:translateX(6px)}70%{transform:translateX(-3px)}90%{transform:translateX(2px)}}
-        @keyframes fadeSlideIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
-        @keyframes workPulse{0%,100%{box-shadow:0 0 16px #4f46e540}50%{box-shadow:0 0 36px #7c3aed,0 0 60px #4f46e555}}
-        @keyframes shipPulse{0%,100%{box-shadow:0 0 8px #22c55e30}50%{box-shadow:0 0 26px #22c55e,0 0 46px #16a34a55}}
-        @keyframes confettiFall{0%{transform:translateY(-30px) rotate(0deg);opacity:1}100%{transform:translateY(110vh) rotate(720deg);opacity:0}}
-        @keyframes levelUpPop{0%{transform:scale(0.5);opacity:0}60%{transform:scale(1.1)}100%{transform:scale(1);opacity:1}}
-        @keyframes streakPulse{0%,100%{box-shadow:0 0 6px #f59e0b40}50%{box-shadow:0 0 18px #f59e0b,0 0 30px #d97706aa}}
-      `}</style>
+      {/* Company name etched in glass */}
+      <div style={{
+        position:'absolute', top:'30%', left:'50%', transform:'translateX(-50%)',
+        fontSize:16, fontWeight:900, color:'rgba(96,165,250,0.2)',
+        whiteSpace:'nowrap', letterSpacing:'0.2em', textTransform:'uppercase',
+        textShadow:'0 0 20px rgba(96,165,250,0.3)',
+      }}>
+        {companyName}
+      </div>
     </div>
   )
 }
 
-function InvestorMeeting({setCash,setTotalEarned,addFloat,companyValue}:{
-  setCash:(fn:(c:number)=>number)=>void
-  setTotalEarned:(fn:(t:number)=>number)=>void
-  addFloat:(val:string)=>void
-  companyValue:number
+// ─────────────────────────────────────────────────────────────
+//  BOTTOM SHEETS
+// ─────────────────────────────────────────────────────────────
+
+// ── Team Sheet ──
+function TeamSheet({ gs, onHire, onBuyOffice, onBuyTool, onBuyEquip, teamTab, setTeamTab, income }: {
+  gs: GameState
+  onHire: (id:string)=>void
+  onBuyOffice: (idx:number)=>void
+  onBuyTool: (id:string)=>void
+  onBuyEquip: (id:string)=>void
+  teamTab: 'hire'|'offices'|'tools'|'equip'
+  setTeamTab: (t:'hire'|'offices'|'tools'|'equip')=>void
+  income: number
 }) {
-  const [taps,setTaps]=useState(0),[active,setActive]=useState(false),[done,setDone]=useState(false),[timer,setTimer]=useState(0)
-  const perTap=Math.max(50,Math.floor(companyValue*0.0005))
-  const start=()=>{if(active||done)return;setActive(true);setTaps(0);setTimer(100)}
-  useEffect(()=>{if(!active)return;const iv=setInterval(()=>setTimer(t=>{if(t<=1){setActive(false);setDone(true);return 0}return t-1}),100);return()=>clearInterval(iv)},[active])
-  useEffect(()=>{
-    if(!done)return
-    const reward=taps*perTap;setCash(c=>c+reward);setTotalEarned(t=>t+reward)
-    addFloat(`🤝 +${fmt(reward)}`)
-    const t=setTimeout(()=>setDone(false),4000);return()=>clearTimeout(t)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[done])
-  return(
+  const tabs: { id: 'hire'|'offices'|'tools'|'equip'; label:string }[] = [
+    { id:'hire',    label:'👥 Hire' },
+    { id:'offices', label:'🏢 Office' },
+    { id:'tools',   label:'🔧 Tools' },
+    { id:'equip',   label:'🎮 Equip' },
+  ]
+
+  return (
     <div>
-      {!active&&!done&&<button onClick={start} style={{background:'linear-gradient(90deg,#f59e0b,#d97706)',color:'#fff',border:'none',borderRadius:10,padding:'10px 26px',cursor:'pointer',fontWeight:700,fontSize:13}}>Start Meeting</button>}
-      {active&&(
+      {/* Sub-tabs */}
+      <div style={{ display:'flex', borderBottom:'1px solid rgba(255,255,255,0.06)', marginBottom:4 }}>
+        {tabs.map(t => (
+          <button
+            key={t.id}
+            onClick={() => setTeamTab(t.id)}
+            style={{
+              flex:1, background:'none', border:'none',
+              padding:'8px 4px', fontSize:11, fontWeight:700,
+              color: teamTab === t.id ? '#4ade80' : '#8888aa',
+              cursor:'pointer',
+              borderBottom: teamTab === t.id ? '2px solid #4ade80' : '2px solid transparent',
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Income display */}
+      <div style={{ padding:'6px 16px', fontSize:11, color:'#8888aa' }}>
+        Base income: <span style={{ color:'#4ade80', fontWeight:700 }}>+{fmtCash(income)}/s</span>
+      </div>
+
+      {teamTab === 'hire' && (
         <div>
-          <div style={{fontSize:11,color:'#f59e0b',marginBottom:6}}>⏱ {(timer/10).toFixed(1)}s — Tap! {taps} taps ({fmt(taps*perTap)})</div>
-          <div style={{background:'#333',borderRadius:4,height:6,marginBottom:9}}><div style={{background:'#f59e0b',height:6,borderRadius:4,width:`${timer}%`,transition:'width 0.1s'}}/></div>
-          <button onClick={()=>setTaps(t=>t+1)} style={{width:82,height:82,borderRadius:'50%',background:'linear-gradient(135deg,#f59e0b,#d97706)',border:'3px solid #fbbf24',color:'#fff',fontSize:24,cursor:'pointer'}}>💼</button>
+          {EMPLOYEES.map(emp => {
+            const owned = gs.employees[emp.id] || 0
+            const cost = empCost(emp.id, owned)
+            const canAfford = gs.cash >= cost
+            const perSec = emp.income * (gs.officeIdx >= 0 ? OFFICES[gs.officeIdx].mult : 1)
+            return (
+              <SheetRow
+                key={emp.id}
+                left={<span>{emp.emoji} {emp.name} <span style={{ color:'#8888aa', fontSize:11 }}>×{owned}</span></span>}
+                sub={`+${fmtCash(emp.income)}/s each • ${fmtCash(cost)} to hire`}
+                right={
+                  <GBtn
+                    label={fmtCash(cost)}
+                    color={canAfford ? '#4ade80' : '#555'}
+                    onClick={() => onHire(emp.id)}
+                    disabled={!canAfford}
+                    small
+                  />
+                }
+              />
+            )
+          })}
         </div>
       )}
-      {done&&<div style={{fontSize:14,color:'#22c55e',fontWeight:700}}>🎉 {fmt(taps*perTap)} raised!</div>}
+
+      {teamTab === 'offices' && (
+        <div>
+          {OFFICES.map((off, idx) => {
+            const owned = gs.officeIdx >= idx
+            const canAfford = gs.cash >= off.cost && gs.officeIdx < idx
+            const isCurrent = gs.officeIdx === idx
+            return (
+              <SheetRow
+                key={off.id}
+                left={<span style={{ color: isCurrent ? off.accent : '#f0f0ff' }}>
+                  {isCurrent ? '✅ ' : ''}{off.name}
+                </span>}
+                sub={`${off.mult}× income multiplier • ${off.floors} floors${off.cost === 0 ? ' • Free' : ` • ${fmtCash(off.cost)}`}`}
+                owned={owned}
+                right={
+                  isCurrent ? (
+                    <span style={{ fontSize:11, color:'#4ade80', fontWeight:700 }}>CURRENT</span>
+                  ) : owned ? (
+                    <span style={{ fontSize:11, color:'#8888aa' }}>Unlocked</span>
+                  ) : (
+                    <GBtn
+                      label={fmtCash(off.cost)}
+                      color={canAfford ? off.accent : '#555'}
+                      onClick={() => onBuyOffice(idx)}
+                      disabled={!canAfford}
+                      small
+                    />
+                  )
+                }
+              />
+            )
+          })}
+        </div>
+      )}
+
+      {teamTab === 'tools' && (
+        <div>
+          {TOOLS.map(tool => {
+            const owned = !!gs.tools[tool.id]
+            const canAfford = gs.cash >= tool.cost && !owned
+            return (
+              <SheetRow
+                key={tool.id}
+                left={<span>{tool.emoji} {tool.name}</span>}
+                sub={`${tool.mult}× income multiplier • ${fmtCash(tool.cost)}`}
+                owned={owned}
+                right={
+                  owned ? (
+                    <span style={{ fontSize:11, color:'#4ade80', fontWeight:700 }}>✅ Active</span>
+                  ) : (
+                    <GBtn
+                      label={fmtCash(tool.cost)}
+                      color={canAfford ? '#60a5fa' : '#555'}
+                      onClick={() => onBuyTool(tool.id)}
+                      disabled={!canAfford}
+                      small
+                    />
+                  )
+                }
+              />
+            )
+          })}
+        </div>
+      )}
+
+      {teamTab === 'equip' && (
+        <div>
+          {EQUIPMENT.map(eq => {
+            const owned = !!gs.equipment[eq.id]
+            const canAfford = gs.cash >= eq.cost && !owned
+            return (
+              <SheetRow
+                key={eq.id}
+                left={<span>{eq.emoji} {eq.name}</span>}
+                sub={`${eq.mult}× income multiplier • ${fmtCash(eq.cost)}`}
+                owned={owned}
+                right={
+                  owned ? (
+                    <span style={{ fontSize:11, color:'#4ade80', fontWeight:700 }}>✅ Installed</span>
+                  ) : (
+                    <GBtn
+                      label={fmtCash(eq.cost)}
+                      color={canAfford ? '#fbbf24' : '#555'}
+                      onClick={() => onBuyEquip(eq.id)}
+                      disabled={!canAfford}
+                      small
+                    />
+                  )
+                }
+              />
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Research Sheet ──
+function ResearchSheet({ gs, onResearch, resTab, setResTab }: {
+  gs: GameState
+  onResearch: (id:string)=>void
+  resTab: 'dev'|'infra'|'data'
+  setResTab: (t:'dev'|'infra'|'data')=>void
+}) {
+  const tabs: { id:'dev'|'infra'|'data'; label:string; color:string }[] = [
+    { id:'dev',   label:'💻 Dev',   color:'#4ade80' },
+    { id:'infra', label:'☁️ Infra', color:'#60a5fa' },
+    { id:'data',  label:'📊 Data',  color:'#fbbf24' },
+  ]
+
+  const branchNodes = RESEARCH.filter(r => r.branch === resTab)
+  const totalBoost = RESEARCH
+    .filter(r => gs.research[r.id])
+    .reduce((acc, r) => acc * (1 + r.boost), 1)
+
+  return (
+    <div>
+      {/* Gems + total boost */}
+      <div style={{ display:'flex', justifyContent:'space-between', padding:'6px 16px 10px', fontSize:12 }}>
+        <span style={{ color:'#8888aa' }}>
+          Balance: <span style={{ color:'#a78bfa', fontWeight:700 }}>{gs.gems} 💎</span>
+        </span>
+        <span style={{ color:'#8888aa' }}>
+          Research boost: <span style={{ color:'#fbbf24', fontWeight:700 }}>×{totalBoost.toFixed(2)}</span>
+        </span>
+      </div>
+
+      {/* Branch tabs */}
+      <div style={{ display:'flex', borderBottom:'1px solid rgba(255,255,255,0.06)', marginBottom:4 }}>
+        {tabs.map(t => (
+          <button
+            key={t.id}
+            onClick={() => setResTab(t.id)}
+            style={{
+              flex:1, background:'none', border:'none',
+              padding:'8px 4px', fontSize:12, fontWeight:700,
+              color: resTab === t.id ? t.color : '#8888aa',
+              cursor:'pointer',
+              borderBottom: resTab === t.id ? `2px solid ${t.color}` : '2px solid transparent',
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      <div>
+        {branchNodes.map((node, idx) => {
+          const owned = !!gs.research[node.id]
+          const prevUnlocked = !node.prev || !!gs.research[node.prev]
+          const canAfford = gs.gems >= node.cost && !owned && prevUnlocked
+          const locked = !prevUnlocked
+          return (
+            <SheetRow
+              key={node.id}
+              left={
+                <span style={{ opacity: locked ? 0.4 : 1 }}>
+                  {owned ? '✅ ' : locked ? '🔒 ' : `${idx + 1}. `}{node.name}
+                </span>
+              }
+              sub={locked ? 'Unlock previous node first' : `+${Math.round(node.boost * 100)}% income • ${node.cost} 💎`}
+              owned={owned}
+              right={
+                owned ? (
+                  <span style={{ fontSize:11, color:'#4ade80', fontWeight:700 }}>Researched</span>
+                ) : (
+                  <GBtn
+                    label={`${node.cost} 💎`}
+                    color={canAfford ? '#a78bfa' : '#555'}
+                    onClick={() => onResearch(node.id)}
+                    disabled={!canAfford || locked}
+                    small
+                  />
+                )
+              }
+            />
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ── Ship Sheet ──
+function ShipSheet({ gs, shipCd, evDef, onShip, onClaimEvent, onWatchAd, effectiveIncome }: {
+  gs: GameState
+  shipCd: number
+  evDef: typeof LIVE_EVENTS[0]
+  onShip: ()=>void
+  onClaimEvent: ()=>void
+  onWatchAd: (t:'boost'|'gems'|'cash'|'spin')=>void
+  effectiveIncome: number
+}) {
+  const shipReward = Math.max(500, effectiveIncome * 30)
+  const eventPct = Math.min(1, gs.liveEvent.progress / evDef.goal)
+
+  return (
+    <div style={{ padding:'0 16px 16px' }}>
+      {/* Ship Feature button */}
+      <div style={{
+        background:'linear-gradient(135deg,#0f2d1a,#1a3a28)',
+        border:'1px solid #4ade8033',
+        borderRadius:16, padding:20, marginBottom:14,
+        textAlign:'center',
+      }}>
+        <div style={{ fontSize:13, color:'#8888aa', marginBottom:6 }}>
+          🚀 Ship a feature to your users
+        </div>
+        <div style={{ fontWeight:900, fontSize:24, color:'#4ade80', marginBottom:12 }}>
+          +{fmtCash(shipReward)}
+        </div>
+        {shipCd > 0 ? (
+          <div>
+            <div style={{
+              background:'#1c1c35', borderRadius:10, padding:'10px 20px',
+              color:'#8888aa', fontWeight:700, fontSize:14, marginBottom:10,
+            }}>
+              ⏳ Cooldown: {fmtTime(shipCd)}
+            </div>
+            <div style={{ fontSize:11, color:'#8888aa' }}>Total shipped: {gs.totalShips}</div>
+          </div>
+        ) : (
+          <GBtn label="🚀 SHIP IT!" color="#4ade80" onClick={onShip} />
+        )}
+      </div>
+
+      {/* Live Event */}
+      <div style={{
+        background:'linear-gradient(135deg,#1a1535,#0d0a25)',
+        border:'1px solid #a78bfa33',
+        borderRadius:16, padding:16, marginBottom:14,
+      }}>
+        <div style={{ fontWeight:800, fontSize:14, marginBottom:4 }}>{evDef.name}</div>
+        <div style={{ fontSize:12, color:'#8888aa', marginBottom:10 }}>
+          {evDef.desc} → {evDef.rewardDesc}
+        </div>
+        <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
+          <div style={{ flex:1, height:8, background:'#2a2a3a', borderRadius:4, overflow:'hidden' }}>
+            <div style={{
+              height:'100%', width:(eventPct * 100) + '%',
+              background:'linear-gradient(90deg,#a78bfa,#60a5fa)',
+              borderRadius:4, transition:'width 0.5s ease',
+            }} />
+          </div>
+          <span style={{ fontSize:11, color:'#a78bfa', fontWeight:700 }}>
+            {gs.liveEvent.progress}/{evDef.goal}
+          </span>
+        </div>
+        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+          <GBtn
+            label={gs.liveEvent.claimed ? '✅ Claimed' : 'Claim Reward'}
+            color="#a78bfa"
+            onClick={onClaimEvent}
+            disabled={gs.liveEvent.claimed || gs.liveEvent.progress < evDef.goal}
+            small
+          />
+          <span style={{ fontSize:11, color:'#8888aa' }}>
+            ⏰ {fmtTime(gs.liveEventTimer)} remaining
+          </span>
+        </div>
+      </div>
+
+      {/* Ad Rewards */}
+      <div style={{ marginBottom:14 }}>
+        <div style={{ fontSize:12, color:'#8888aa', marginBottom:8, fontWeight:700 }}>📺 WATCH ADS FOR BONUSES</div>
+        {[
+          { type:'boost' as const, label:'⚡ Watch for 2× Boost (60s)', color:'#fbbf24' },
+          { type:'gems'  as const, label:'💎 Watch for +15 Gems',       color:'#a78bfa' },
+          { type:'cash'  as const, label:`💰 Watch for ${fmtCash(Math.max(1000, effectiveIncome*60))} Cash`, color:'#4ade80' },
+        ].map(a => (
+          <div key={a.type} style={{ marginBottom:8 }}>
+            <GBtn label={a.label} color={a.color} onClick={() => onWatchAd(a.type)} />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ── More Sheet ──
+function MoreSheet({ gs, onSpin, spinResult, spinAnimIdx, setSpinResult, onClaimMission, onClaimStreak, onStartInvestor, investorActive, investorTaps, investorTimer, investorDone, onInvestorTap, onInvestorEnd, onWatchAd, showIPO, onIPO, onToggleSfx }: {
+  gs: GameState
+  onSpin: ()=>void
+  spinResult: typeof SPIN_REWARDS[0] | null
+  spinAnimIdx: number | null
+  setSpinResult: (r: typeof SPIN_REWARDS[0] | null)=>void
+  onClaimMission: (i:number)=>void
+  onClaimStreak: ()=>void
+  onStartInvestor: ()=>void
+  investorActive: boolean
+  investorTaps: number
+  investorTimer: number
+  investorDone: boolean
+  onInvestorTap: ()=>void
+  onInvestorEnd: ()=>void
+  onWatchAd: (t:'boost'|'gems'|'cash'|'spin')=>void
+  showIPO: boolean
+  onIPO: ()=>void
+  onToggleSfx: ()=>void
+}) {
+  const today = todayStr()
+  const canSpin = gs.spunDate !== today
+  const streakDay = ((gs.loginStreak - 1) % 7) + 1
+
+  const lbEntries = [
+    { name: gs.companyName, val: gs.companyValue, isPlayer: true },
+    ...LEADERBOARD_RIVALS,
+  ].sort((a, b) => b.val - a.val)
+
+  return (
+    <div style={{ padding:'0 0 20px' }}>
+
+      {/* IPO Banner */}
+      {showIPO && (
+        <div style={{
+          margin:'0 16px 14px',
+          background:'linear-gradient(135deg,#1a1535,#0d0a25)',
+          border:'2px solid #a78bfa',
+          borderRadius:16, padding:16, textAlign:'center',
+          animation:'sg-pulse 2s ease-in-out infinite',
+        }}>
+          <div style={{ fontWeight:900, fontSize:16, color:'#a78bfa', marginBottom:6 }}>🎉 IPO READY!</div>
+          <div style={{ fontSize:12, color:'#8888aa', marginBottom:12 }}>
+            Your company hit $1B! Go public for Prestige {gs.prestigeLevel + 1}.
+          </div>
+          <GBtn label="🚀 Go Public!" color="#a78bfa" onClick={onIPO} />
+        </div>
+      )}
+
+      {/* Daily Spin */}
+      <div style={{
+        margin:'0 16px 14px',
+        background:'linear-gradient(135deg,#1a1525,#0d0a20)',
+        border:'1px solid #a78bfa33',
+        borderRadius:16, padding:16,
+      }}>
+        <div style={{ fontWeight:800, fontSize:14, marginBottom:10, display:'flex', justifyContent:'space-between' }}>
+          <span>🎰 Daily Spin</span>
+          {!canSpin && <span style={{ fontSize:11, color:'#8888aa' }}>Used today</span>}
+        </div>
+        {spinResult && (
+          <div style={{
+            textAlign:'center', marginBottom:12,
+            background:'#1c1c35', borderRadius:10, padding:10,
+            animation:'sg-pop 0.4s ease-out',
+          }}>
+            <div style={{ fontSize:20, marginBottom:4 }}>🎉</div>
+            <div style={{ fontWeight:800, color:'#4ade80' }}>You won: {spinResult.label}</div>
+            <button
+              onClick={() => setSpinResult(null)}
+              style={{ marginTop:8, background:'none', border:'1px solid #8888aa44', borderRadius:8, color:'#8888aa', padding:'4px 12px', fontSize:11, cursor:'pointer' }}
+            >
+              Close
+            </button>
+          </div>
+        )}
+        {/* Spin wheel display */}
+        <div style={{ display:'flex', flexWrap:'wrap', gap:4, marginBottom:12 }}>
+          {SPIN_REWARDS.map((r, i) => (
+            <div key={i} style={{
+              flex:'1 1 calc(25% - 4px)', textAlign:'center',
+              background: spinAnimIdx === i ? '#2a3a4a' : '#1c1c35',
+              borderRadius:8, padding:'6px 4px',
+              fontSize:9, fontWeight:700,
+              color: spinAnimIdx === i ? '#fbbf24' : '#8888aa',
+              border: spinAnimIdx === i ? '1px solid #fbbf24' : '1px solid transparent',
+              transition:'all 0.1s',
+            }}>
+              {r.label}
+            </div>
+          ))}
+        </div>
+        <div style={{ display:'flex', gap:8 }}>
+          <GBtn
+            label={canSpin ? '🎰 Spin!' : 'Already Spun'}
+            color={canSpin ? '#a78bfa' : '#555'}
+            onClick={canSpin && !spinAnimIdx ? onSpin : ()=>{}}
+            disabled={!canSpin || !!spinAnimIdx}
+          />
+          {!canSpin && (
+            <GBtn label="📺 Watch to Reset" color="#fbbf24" onClick={() => onWatchAd('spin')} small />
+          )}
+        </div>
+      </div>
+
+      {/* Login Streak */}
+      <div style={{
+        margin:'0 16px 14px',
+        background:'linear-gradient(135deg,#1a1520,#0d0a18)',
+        border:'1px solid #fbbf2433',
+        borderRadius:16, padding:16,
+      }}>
+        <div style={{ fontWeight:800, fontSize:14, marginBottom:10 }}>📅 Login Streak</div>
+        <div style={{ display:'flex', gap:4, marginBottom:10 }}>
+          {Array.from({ length:7 }).map((_, i) => {
+            const dayNum = i + 1
+            const claimed = dayNum < streakDay || (dayNum === streakDay && gs.streakClaimed)
+            const isToday = dayNum === streakDay
+            return (
+              <div key={i} style={{
+                flex:1, textAlign:'center',
+                background: claimed ? '#1a3a28' : isToday ? '#2a2010' : '#1c1c35',
+                borderRadius:8, padding:'5px 2px',
+                border: isToday ? '1px solid #fbbf24' : '1px solid transparent',
+              }}>
+                <div style={{ fontSize:9, color: claimed ? '#4ade80' : isToday ? '#fbbf24' : '#8888aa' }}>
+                  {claimed ? '✅' : isToday ? '⭐' : `D${dayNum}`}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+          <GBtn
+            label={gs.streakClaimed ? '✅ Claimed' : `Claim Day ${streakDay}`}
+            color={gs.streakClaimed ? '#555' : '#fbbf24'}
+            onClick={gs.streakClaimed ? ()=>{} : onClaimStreak}
+            disabled={gs.streakClaimed}
+            small
+          />
+          <span style={{ fontSize:11, color:'#8888aa' }}>🔥 {gs.loginStreak} day streak</span>
+        </div>
+      </div>
+
+      {/* Daily Missions */}
+      <div style={{
+        margin:'0 16px 14px',
+        background:'linear-gradient(135deg,#141a14,#0d0d10)',
+        border:'1px solid #4ade8033',
+        borderRadius:16, padding:16,
+      }}>
+        <div style={{ fontWeight:800, fontSize:14, marginBottom:10 }}>📋 Daily Missions</div>
+        {gs.dailyMissions.map((m, i) => {
+          const prog = getMissionProgress(m, gs)
+          const pct = Math.min(1, prog / m.goal)
+          const done = pct >= 1
+          return (
+            <div key={m.id} style={{ marginBottom:10 }}>
+              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
+                <span style={{ fontSize:12, fontWeight:600, color: m.claimed ? '#555' : '#f0f0ff' }}>
+                  {m.claimed ? '✅ ' : ''}{m.desc}
+                </span>
+                <span style={{ fontSize:11, color:'#8888aa' }}>
+                  {m.reward.gems ? `${m.reward.gems} 💎` : fmtCash(m.reward.cash!)}
+                </span>
+              </div>
+              <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                <div style={{ flex:1, height:5, background:'#1c1c35', borderRadius:3, overflow:'hidden' }}>
+                  <div style={{
+                    height:'100%', width:(pct * 100) + '%',
+                    background: done ? '#4ade80' : '#60a5fa',
+                    borderRadius:3, transition:'width 0.5s ease',
+                  }} />
+                </div>
+                <span style={{ fontSize:10, color:'#8888aa', minWidth:40 }}>
+                  {fmt(prog)}/{fmt(m.goal)}
+                </span>
+                {done && !m.claimed && (
+                  <GBtn label="Claim" color="#4ade80" onClick={() => onClaimMission(i)} small />
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Investor Meeting */}
+      <div style={{
+        margin:'0 16px 14px',
+        background:'linear-gradient(135deg,#151a20,#0d1015)',
+        border:'1px solid #60a5fa33',
+        borderRadius:16, padding:16,
+      }}>
+        <div style={{ fontWeight:800, fontSize:14, marginBottom:8 }}>🤝 Investor Meeting</div>
+        <div style={{ fontSize:12, color:'#8888aa', marginBottom:12 }}>
+          Tap as fast as you can for 10 seconds!
+          Earn {fmtCash(Math.max(50, Math.floor(gs.companyValue * 0.0005)))} per tap.
+        </div>
+        {!investorActive && !investorDone && (
+          <GBtn label="Start Meeting" color="#60a5fa" onClick={onStartInvestor} />
+        )}
+        {investorActive && (
+          <div style={{ textAlign:'center' }}>
+            <div style={{ fontSize:32, fontWeight:900, color:'#fbbf24', marginBottom:4 }}>
+              {investorTimer}s
+            </div>
+            <div style={{ fontSize:14, color:'#4ade80', marginBottom:8 }}>
+              {investorTaps} taps
+            </div>
+            <button
+              onClick={onInvestorTap}
+              style={{
+                width:100, height:100, borderRadius:'50%',
+                background:'linear-gradient(135deg,#1a3a5a,#0d2030)',
+                border:'3px solid #60a5fa',
+                fontSize:32, cursor:'pointer',
+                animation:'sg-pulse 0.5s ease-in-out infinite',
+              }}
+            >
+              🤝
+            </button>
+            <div style={{ marginTop:8 }}>
+              <GBtn label="End Meeting" color="#f87171" onClick={onInvestorEnd} small />
+            </div>
+          </div>
+        )}
+        {investorDone && (
+          <div style={{ textAlign:'center' }}>
+            <div style={{ fontSize:14, color:'#4ade80', marginBottom:8 }}>
+              ✅ Done! {investorTaps} taps total.
+            </div>
+            <GBtn label="Start Again" color="#60a5fa" onClick={onStartInvestor} small />
+          </div>
+        )}
+      </div>
+
+      {/* Leaderboard */}
+      <div style={{
+        margin:'0 16px 14px',
+        background:'linear-gradient(135deg,#1a1520,#0d0a18)',
+        border:'1px solid rgba(255,255,255,0.06)',
+        borderRadius:16, padding:16,
+      }}>
+        <div style={{ fontWeight:800, fontSize:14, marginBottom:10 }}>🏆 Leaderboard</div>
+        {lbEntries.slice(0, 6).map((e, i) => (
+          <div key={i} style={{
+            display:'flex', justifyContent:'space-between', alignItems:'center',
+            padding:'6px 0', borderBottom:'1px solid rgba(255,255,255,0.04)',
+            background: e.isPlayer ? 'rgba(74,222,128,0.05)' : 'transparent',
+          }}>
+            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+              <span style={{ fontSize:13, color: i === 0 ? '#fbbf24' : i === 1 ? '#aaa' : i === 2 ? '#cd7f32' : '#555', fontWeight:800, minWidth:20 }}>
+                {i + 1}
+              </span>
+              <span style={{ fontSize:12, fontWeight: e.isPlayer ? 800 : 400, color: e.isPlayer ? '#4ade80' : '#f0f0ff' }}>
+                {e.name}{e.isPlayer ? ' (You)' : ''}
+              </span>
+            </div>
+            <span style={{ fontSize:11, color:'#8888aa' }}>{fmtCash(e.val)}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Gem Store */}
+      <div style={{
+        margin:'0 16px 14px',
+        background:'linear-gradient(135deg,#1a1535,#0d0a25)',
+        border:'1px solid #a78bfa33',
+        borderRadius:16, padding:16,
+      }}>
+        <div style={{ fontWeight:800, fontSize:14, marginBottom:10 }}>💎 Gem Store</div>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
+          {GEM_PACKS.map((pack, i) => (
+            <div key={i} style={{
+              background:'#1c1c35', borderRadius:12, padding:'10px 8px',
+              textAlign:'center', border:'1px solid rgba(167,139,250,0.2)',
+              position:'relative',
+            }}>
+              {i === 3 && (
+                <div style={{
+                  position:'absolute', top:-6, right:-6,
+                  background:'#fbbf24', borderRadius:8, padding:'1px 5px',
+                  fontSize:8, fontWeight:800, color:'#0d0d1a',
+                }}>BEST</div>
+              )}
+              <div style={{ fontWeight:800, fontSize:16, color:'#a78bfa', marginBottom:2 }}>
+                💎 {pack.gems}
+              </div>
+              <div style={{ fontSize:10, color:'#8888aa', marginBottom:4 }}>{pack.label}</div>
+              {pack.bonus && <div style={{ fontSize:9, color:'#4ade80', marginBottom:6 }}>{pack.bonus}</div>}
+              <div style={{
+                background:'linear-gradient(135deg,#a78bfa99,#a78bfa55)',
+                border:'1px solid #a78bfa66',
+                borderRadius:8, padding:'5px 0',
+                fontSize:13, fontWeight:800, color:'#a78bfa',
+                cursor:'pointer',
+              }}>
+                {pack.price}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Settings */}
+      <div style={{ margin:'0 16px 14px' }}>
+        <div style={{ fontWeight:800, fontSize:14, marginBottom:10 }}>⚙️ Settings</div>
+        <SheetRow
+          left="🔊 Sound Effects"
+          sub={gs.sfxEnabled ? 'Enabled' : 'Disabled'}
+          right={
+            <button
+              onClick={onToggleSfx}
+              style={{
+                width:44, height:24, borderRadius:12,
+                background: gs.sfxEnabled ? '#4ade80' : '#2a2a3a',
+                border:'none', cursor:'pointer', position:'relative',
+                transition:'background 0.2s',
+              }}
+            >
+              <div style={{
+                width:18, height:18, borderRadius:'50%', background:'#fff',
+                position:'absolute', top:3,
+                left: gs.sfxEnabled ? 23 : 3,
+                transition:'left 0.2s',
+              }} />
+            </button>
+          }
+        />
+        <SheetRow
+          left="🎮 Version"
+          sub={`Silicon Grind v${VERSION}`}
+          right={<span style={{ fontSize:11, color:'#555' }}>{gs.daysPlayed}d played</span>}
+        />
+      </div>
     </div>
   )
 }

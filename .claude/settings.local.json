@@ -4,7 +4,24 @@
       "Bash(npm run *)",
       "Bash(npx tsc *)",
       "Bash(git add *)",
-      "Bash(git init *)"
+      "Bash(git init *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(powershell *)",
+      "Bash(Remove-Item *)",
+      "PowerShell(Remove-Item *)",
+      "Bash(Measure-Object -Line)",
+      "Bash(Select-Object -ExpandProperty Lines)",
+      "PowerShell(Out-File *)",
+      "PowerShell(cd \"C:\\\\Users\\\\jcthe\\\\.cursor\\\\projects\\\\C-Users-jcthe-AppData-Local-Temp-3862a4d7-c6ae-4b35-b610-d66f9c5e4647\\\\my-clerk-app\"; powershell -File find_orig_emoji2.ps1)",
+      "Bash(python3 -c ' *)",
+      "Bash(python -c ' *)",
+      "Bash(node -e ' *)",
+      "Bash(git show *)",
+      "Bash(node *)",
+      "Bash(Write-Output \"Done\")",
+      "Bash(rm -rf \"C:\\\\Users\\\\jcthe\\\\.cursor\\\\projects\\\\C-Users-jcthe-AppData-Local-Temp-3862a4d7-c6ae-4b35-b610-d66f9c5e4647\\\\my-clerk-app\\\\.next\")",
+      "Bash(rm -rf \"C:\\\\Users\\\\jcthe\\\\.cursor\\\\projects\\\\C-Users-jcthe-AppData-Local-Temp-3862a4d7-c6ae-4b35-b610-d66f9c5e4647\\\\my-clerk-app\\\\node_modules\\\\.cache\")"
     ]
   }
 }
